@@ -419,3 +419,10 @@ gate**, the **MCP stdio client** (against a local stub server — connect, `tool
 builders** (image/pdf content arrays from fixture files + pdf-plugin detection), **skill discovery +
 arg substitution**, and the **jobs/schedule store** (duration + cron parsing, `tickScheduler` firing
 due jobs against a temp HOME). 145 checks, all green.
+
+## License
+
+**[PolyForm Noncommercial License 1.0.0](LICENSE)** — Slivr is **source-available, not open-source**.
+You may use, copy, modify, and share it for **any noncommercial purpose** (personal projects,
+research, education, evaluation, and noncommercial-organization use). **Commercial use requires a
+separate license** from the author. See [`LICENSE`](LICENSE) for the exact terms.
