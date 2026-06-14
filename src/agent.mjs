@@ -21,6 +21,9 @@ You work ONE tool call at a time. Respond with EXACTLY ONE JSON object, nothing 
   {"tool":"web_search","args":{"query":"how to X in library Y"}}
   {"tool":"web_fetch","args":{"url":"https://..."}}
   {"tool":"delegate","args":{"task":"a focused, self-contained sub-task to run in a fresh sub-agent"}}
+  {"tool":"parallel","args":{"tasks":["independent subtask A","independent subtask B"]}}
+  {"tool":"plan","args":{"steps":["step 1","step 2","step 3"]}}
+  {"tool":"task_write","args":{"tasks":[{"id":"1","subject":"do X","status":"in_progress"},{"subject":"then Y","status":"pending"}]}}
   {"tool":"edit_file","args":{"path":"f.js","anchor":"<verbatim existing lines>","replacement":"<new lines>","op":"replace"}}
   {"tool":"create_file","args":{"path":"new.js","content":"<full content of a brand-NEW file>"}}
   {"tool":"edit_files","args":{"edits":[{"path":"a.js","anchor":"...","replacement":"...","op":"replace"},{"path":"b.js","anchor":"...","replacement":"..."}]}}
@@ -44,8 +47,26 @@ EDIT PROTOCOL (important — this is how you keep edits cheap and correct):
 - If an edit fails you get a compact repair packet with the nearest real spans. Fix your anchor
   from that packet and retry — do NOT re-read the whole file unless the packet says wrong-file.
 
-Workflow: explore (list_dir/read_file/grep) → make targeted edits → if the task has a check
-script, run it to verify → call done. Keep going until the task is verifiably complete.`;
+ORCHESTRATION (parallel):
+- "parallel" runs each subtask as its OWN sub-agent CONCURRENTLY (up to 4 at once), one level
+  deep. Use it to fan out INDEPENDENT work: research/explore several things at once, or edit
+  DISJOINT files. CAVEAT: sub-agents SHARE this working directory — NEVER parallelize subtasks
+  that edit the SAME file or depend on each other's output (you'll get races / lost writes).
+  When work is sequential or touches overlapping files, do it yourself one tool at a time.
+  Pattern: decompose the task → fan out independent pieces with parallel → integrate the results.
+
+PLANNING (plan): when plan-mode is on you MUST call "plan" with a numbered list of concrete steps
+  BEFORE any edit/create/run_command — those are blocked until a plan exists and is approved.
+  Even when plan-mode is off, calling plan first on a multi-step task helps you stay on track.
+
+TASK MANAGEMENT (task_write): for any multi-step task, call "task_write" up front to lay out the
+  steps as a checklist, then update it as you go. status ∈ pending|in_progress|completed. Keep
+  EXACTLY ONE task in_progress at a time; mark a task completed right after you finish it. This
+  drives the live checklist the user sees.
+
+Workflow: (plan if asked) → task_write a checklist → explore (list_dir/read_file/grep) → make
+targeted edits (fan out independent work with parallel) → run the check script to verify → keep
+the checklist updated → call done. Keep going until the task is verifiably complete.`;
 
 export function makeAgent(workdir, opts = {}) {
   const provider = new Provider(opts);
@@ -66,8 +87,45 @@ export function makeAgent(workdir, opts = {}) {
     web_fetch: (a) => tools.web_fetch(a),
     web_search: (a) => tools.web_search(a),
     delegate: (a) => delegateSubAgent(a, workdir, opts),
+    parallel: (a) => parallelSubAgents(a, workdir, opts),
+    plan: (a) => tools.plan_tool(a),
+    task_write: (a) => tools.task_write(a),
   };
   return { provider, tools, toolMap };
+}
+
+// parallel: fan out several INDEPENDENT subtasks as concurrent sub-agents (one level deep only —
+// reuses the same _depth guard as delegate so sub-agents cannot spawn more). Runs at most CAP at a
+// time (Promise pool). Sub-agents share the workdir, so this is only safe for independent work.
+const PARALLEL_CAP = 4;
+export async function parallelSubAgents(a, workdir, opts, runner = runAgent) {
+  if ((opts._depth || 0) >= 1) return { ok: false, error: "MAX_DELEGATE_DEPTH", hint: "A sub-agent cannot spawn more sub-agents." };
+  const coerce = (t) => {
+    if (t == null) return "";
+    if (typeof t === "string") return t.trim();
+    if (typeof t === "object") return String(t.task ?? t.subject ?? t.description ?? t.prompt ?? "").trim();
+    return String(t).trim();
+  };
+  const tasks = Array.isArray(a?.tasks) ? a.tasks.map(coerce).filter(Boolean) : [];
+  if (!tasks.length) return { ok: false, error: "NO_TASKS", hint: 'Pass tasks: ["subtask 1","subtask 2"]' };
+  const cap = Math.max(1, Math.min(PARALLEL_CAP, opts.parallelCap || PARALLEL_CAP));
+  const results = new Array(tasks.length);
+  let next = 0;
+  const worker = async () => {
+    while (true) {
+      const i = next++;
+      if (i >= tasks.length) return;
+      const task = tasks[i];
+      try {
+        const sub = await runner(task, workdir, { ...opts, _depth: (opts._depth || 0) + 1, maxSteps: Math.min(10, opts.maxSteps ?? 10), onStep: undefined });
+        results[i] = { task, summary: sub.summary, done: sub.done, turns: sub.turns };
+      } catch (e) {
+        results[i] = { task, summary: "", done: false, turns: 0, error: String(e?.message || e) };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(cap, tasks.length) }, worker));
+  return { ok: true, cap, count: tasks.length, results };
 }
 
 // delegate: run a focused SUB-TASK in a fresh agent (one level deep only — no recursion runaway).
@@ -77,6 +135,19 @@ async function delegateSubAgent(a, workdir, opts) {
   if (!task) return { ok: false, error: "NO_TASK" };
   const sub = await runAgent(task, workdir, { ...opts, _depth: (opts._depth || 0) + 1, maxSteps: Math.min(10, opts.maxSteps ?? 10), onStep: undefined });
   return { ok: true, summary: sub.summary, turns: sub.turns, done: sub.done };
+}
+
+// Tools whose effects mutate the repo / run commands — gated by plan-mode until a plan is approved.
+export const MUTATING_TOOLS = new Set(["edit_file", "edit_files", "create_file", "write_file", "run_command"]);
+
+// planGate: pure decision for the harness. When plan-mode is on, block mutating tools until a plan
+// has been recorded AND approved. Returns { deny, reason } or { deny:false }.
+export function planGate({ tool, tools }) {
+  if (!tools?.planMode) return { deny: false };
+  if (!MUTATING_TOOLS.has(tool)) return { deny: false };
+  if (!tools.plan) return { deny: true, reason: "plan-mode is on: call the `plan` tool with numbered steps FIRST (no edits/commands allowed until a plan is approved)." };
+  if (!tools.plan.approved) return { deny: true, reason: "your plan is awaiting approval — do not edit/run yet." };
+  return { deny: false };
 }
 
 export async function runAgent(task, workdir, opts = {}) {
@@ -136,6 +207,9 @@ export class Session {
       web_fetch: (a) => t.web_fetch(a),
       web_search: (a) => t.web_search(a),
       delegate: (a) => delegateSubAgent(a, this.workdir, this.opts),
+      parallel: (a) => parallelSubAgents(a, this.workdir, this.opts),
+      plan: (a) => t.plan_tool(a),
+      task_write: (a) => t.task_write(a),
     };
   }
 

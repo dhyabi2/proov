@@ -75,11 +75,52 @@ cc-alt                       interactive REPL in the current directory
 cc-alt "<task>" [dir]        one-shot
 cc-alt config                print resolved config
 cc-alt --init                write a starter ./.cc-alt.json
-flags: --model <id>  --approval <auto|edits|all>  --auto  --dir <path>  --max-steps <n>
+flags: --model <id>  --approval <auto|edits|all>  --auto  --plan  --dir <path>  --max-steps <n>
        --baseline (one-shot full-rewrite harness, for the benchmark)  --help  --version
 ```
 
 (`node bin/agent.mjs "<task>" <dir> [--baseline]` is still supported for the original benchmark.)
+
+### Orchestration, plan-mode & tasks
+
+The agent has four extra capabilities for non-trivial, multi-step work:
+
+**`parallel` — fan-out orchestration.** The model can call `parallel` to run several **independent**
+subtasks as their *own* sub-agents *concurrently* (up to **4** at a time, **one level deep** — a
+sub-agent cannot fan out further). The main agent decomposes → fans out with `parallel` → integrates.
+```jsonc
+{"tool":"parallel","args":{"tasks":["research how X works","find every call site of Y"]}}
+// returns: [{task, summary, done, turns}, …]
+```
+⚠️ **Shared-workdir caveat:** all sub-agents share the *same* working directory, so `parallel` is
+only safe for **independent** work — research/exploration in parallel, or edits to **disjoint** files.
+Never parallelize subtasks that touch the same file or depend on each other's output (you'll get
+races / lost writes). For sequential or overlapping work the agent edits one tool-call at a time.
+
+**`--plan` / `/plan` — plan-mode.** When on, the agent must first call `plan` with a numbered list of
+concrete steps; **all edits and commands are blocked until a plan exists and is approved.** The harness
+prints the plan and asks `proceed? [y]es / [e]dit / [n]o` — `edit` lets you type a revised plan, `no`
+aborts. Under `--auto` the plan is **auto-approved** but still shown.
+```
+cc-alt --plan "refactor the auth module"        # interactive: review the plan, then it executes
+cc-alt --plan --auto "add a healthcheck route"  # shows the plan, auto-approves, executes
+# REPL: /plan [on|off]   toggle for the session (re-planned each request)
+```
+
+**`task_write` — live task checklist.** The agent maintains a to-do list it updates as it works; the
+UI renders it live (`☐` pending · `◐` in_progress · `✓` completed), keeping exactly one task
+`in_progress`, and prints a final summary at the end.
+```jsonc
+{"tool":"task_write","args":{"tasks":[
+  {"id":"1","subject":"explore the codebase","status":"completed"},
+  {"id":"2","subject":"apply the fix","status":"in_progress"},
+  {"subject":"run the tests","status":"pending"}
+]}}
+```
+
+**`--auto` — no prompts.** Skips *all* approval prompts (edits, commands, **and** plan approval) while
+the destructive-command **blocklist still fires** (`rm -rf /`, `sudo`, `curl … | sh`, etc. are refused
+even in `--auto`).
 
 ---
 

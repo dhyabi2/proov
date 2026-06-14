@@ -17,6 +17,58 @@ export class Tools {
   constructor(workdir, opts = {}) {
     this.workdir = path.resolve(workdir);
     this.opts = opts; // { apiKey, model, baseUrl } — used by the web tools
+    // --- plan-mode + task-management state (lives on the Tools instance so both the tool
+    //     implementations and the harness gate/UI can read it for the duration of a session) ---
+    this.planMode = !!opts.planMode;     // when true, mutating tools are gated until a plan is approved
+    this.plan = null;                    // { steps:[...], approved:bool } once the model calls `plan`
+    this.tasks = [];                     // [{ id, subject, status }] maintained via task_write
+  }
+
+  // plan (cc-alt): record a numbered list of concrete steps BEFORE mutating the repo. In plan-mode
+  // the harness blocks all edits/commands until a plan exists and is approved. Calling plan again
+  // REPLACES the steps and resets approval (the harness re-asks). Returns the recorded steps.
+  plan_tool({ steps } = {}) {
+    let arr = steps;
+    if (typeof arr === "string") arr = arr.split("\n").map(s => s.trim()).filter(Boolean);
+    if (!Array.isArray(arr) || arr.length === 0) return { ok: false, error: "NO_STEPS", hint: 'Pass steps: ["step 1","step 2", ...]' };
+    const clean = arr.map(s => String(s).trim()).filter(Boolean).slice(0, 50);
+    if (!clean.length) return { ok: false, error: "NO_STEPS" };
+    this.plan = { steps: clean, approved: false };
+    return { ok: true, steps: clean, note: "Plan recorded. In plan-mode it must be approved before edits/commands run." };
+  }
+
+  // task_write (cc-alt): replace/update the live task checklist. tasks = [{id?, subject, status}],
+  // status ∈ pending|in_progress|completed. Items WITH a matching id update in place; items without
+  // an id (or a new id) are appended/created. Keep exactly one task in_progress at a time.
+  task_write({ tasks } = {}) {
+    if (!Array.isArray(tasks)) return { ok: false, error: "NO_TASKS", hint: 'Pass tasks: [{subject, status}]' };
+    const VALID = new Set(["pending", "in_progress", "completed"]);
+    const byId = new Map(this.tasks.map(t => [t.id, t]));
+    let nextId = this.tasks.reduce((m, t) => Math.max(m, Number(t.id) || 0), 0);
+    const order = [];
+    const seen = new Set();
+    for (const raw of tasks) {
+      if (!raw || typeof raw !== "object") continue;
+      const subject = String(raw.subject ?? "").trim();
+      let status = String(raw.status ?? "pending").trim();
+      if (!VALID.has(status)) status = "pending";
+      let id = raw.id != null ? String(raw.id) : null;
+      if (id && byId.has(id)) {
+        const ex = byId.get(id);
+        if (subject) ex.subject = subject;
+        ex.status = status;
+        if (!seen.has(id)) { order.push(ex); seen.add(id); }
+      } else {
+        if (!subject) continue;
+        id = id || String(++nextId);
+        const t = { id, subject, status };
+        byId.set(id, t);
+        if (!seen.has(id)) { order.push(t); seen.add(id); }
+      }
+    }
+    // task_write replaces the list with exactly what was passed (in the given order).
+    this.tasks = order;
+    return { ok: true, tasks: this.tasks.map(t => ({ ...t })) };
   }
 
   _resolve(rel) {

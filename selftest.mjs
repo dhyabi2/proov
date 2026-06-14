@@ -14,7 +14,8 @@ import { resolveConfig, DEFAULTS } from "./src/config.mjs";
 import { isDestructive, needsApproval } from "./src/safety.mjs";
 import { unifiedDiff, diffStat, diffLines } from "./src/diff.mjs";
 import { parseCommand } from "./src/repl.mjs";
-import { describeStep, makePalette, footer, colorEnabled } from "./src/ui.mjs";
+import { describeStep, makePalette, footer, colorEnabled, renderTasks, renderPlan } from "./src/ui.mjs";
+import { parallelSubAgents, planGate, MUTATING_TOOLS } from "./src/agent.mjs";
 
 let pass = 0, fail = 0;
 function ok(name, cond, extra = "") {
@@ -232,6 +233,101 @@ console.log("== 9. approval gate in loop (no LLM) ==");
   ok("denied edit was NOT applied", t2.read_file({ path: "h.js" }).content.includes("V = 1"));
   ok("loop still completes after denial", res.done === true);
   ok("trace records denial", res.trace.some(s => s.denied));
+}
+
+console.log("== 10. parallel orchestration (cap + depth guard, stubbed runner) ==");
+{
+  // Stub sub-agent runner: tracks concurrency, resolves after a microtask-ish delay.
+  let active = 0, maxActive = 0;
+  const runner = async (task) => {
+    active++; maxActive = Math.max(maxActive, active);
+    await new Promise(r => setTimeout(r, 5));
+    active--;
+    return { summary: "did " + task, done: true, turns: 1 };
+  };
+  const r = await parallelSubAgents({ tasks: ["a", "b", "c", "d", "e", "f"] }, "/tmp", { _depth: 0 }, runner);
+  ok("parallel returns one result per task", r.ok && r.results.length === 6);
+  ok("parallel results carry {task,summary,done,turns}", r.results.every(x => x.task && x.done === true && x.turns === 1 && /did /.test(x.summary)));
+  ok("parallel concurrency capped at 4", maxActive <= 4 && maxActive > 1, "maxActive=" + maxActive);
+
+  // depth guard: a sub-agent (depth>=1) cannot fan out further.
+  const guarded = await parallelSubAgents({ tasks: ["x"] }, "/tmp", { _depth: 1 }, runner);
+  ok("parallel blocked at depth>=1", !guarded.ok && guarded.error === "MAX_DELEGATE_DEPTH");
+
+  // sub-agents themselves run at depth+1 (so THEY hit the guard) — verify opts threading.
+  let seenDepth = -1;
+  const depthRunner = async (task, wd, o) => { seenDepth = o._depth; return { summary: "", done: true, turns: 0 }; };
+  await parallelSubAgents({ tasks: ["one"] }, "/tmp", { _depth: 0 }, depthRunner);
+  ok("parallel runs subtasks at depth+1", seenDepth === 1, "depth=" + seenDepth);
+
+  // empty / bad input
+  const empty = await parallelSubAgents({ tasks: [] }, "/tmp", {}, runner);
+  ok("parallel rejects empty task list", !empty.ok && empty.error === "NO_TASKS");
+}
+
+console.log("== 11. plan-mode gate (no LLM) ==");
+{
+  const t = new Tools(tmp, { planMode: true });
+  ok("mutating set covers edits+commands", MUTATING_TOOLS.has("edit_file") && MUTATING_TOOLS.has("create_file") && MUTATING_TOOLS.has("run_command") && MUTATING_TOOLS.has("edit_files"));
+  // plan-mode on, no plan yet -> edits blocked, reads allowed.
+  ok("edit blocked before any plan", planGate({ tool: "edit_file", tools: t }).deny === true);
+  ok("run_command blocked before plan", planGate({ tool: "run_command", tools: t }).deny === true);
+  ok("read NOT blocked in plan-mode", planGate({ tool: "read_file", tools: t }).deny === false);
+  ok("plan tool itself NOT blocked", planGate({ tool: "plan", tools: t }).deny === false);
+
+  // record a plan -> still blocked until approved
+  const pr = t.plan_tool({ steps: ["read file", "edit file", "run test"] });
+  ok("plan_tool records steps", pr.ok && pr.steps.length === 3 && t.plan.approved === false);
+  ok("edit blocked while plan unapproved", planGate({ tool: "edit_file", tools: t }).deny === true);
+
+  // approve -> edits allowed
+  t.plan.approved = true;
+  ok("edit allowed after plan approved", planGate({ tool: "edit_file", tools: t }).deny === false);
+
+  // plan-mode OFF -> nothing gated regardless of plan
+  const t2 = new Tools(tmp, { planMode: false });
+  ok("no gating when plan-mode off", planGate({ tool: "edit_file", tools: t2 }).deny === false);
+
+  // bad plan input
+  ok("plan_tool rejects empty steps", t.plan_tool({ steps: [] }).ok === false);
+  ok("renderPlan shows numbered steps", /1\./.test(renderPlan(t.plan, makePalette(false))));
+}
+
+console.log("== 12. task_write list state transitions (no LLM) ==");
+{
+  const t = new Tools(tmp);
+  // initial write assigns ids + statuses
+  const r1 = t.task_write({ tasks: [{ subject: "explore", status: "in_progress" }, { subject: "edit", status: "pending" }, { subject: "verify", status: "pending" }] });
+  ok("task_write creates list with ids", r1.ok && r1.tasks.length === 3 && r1.tasks.every(x => x.id));
+  ok("task_write keeps statuses", r1.tasks[0].status === "in_progress" && r1.tasks[1].status === "pending");
+
+  // update by id: complete #1, start #2
+  const id1 = r1.tasks[0].id, id2 = r1.tasks[1].id, id3 = r1.tasks[2].id;
+  const r2 = t.task_write({ tasks: [
+    { id: id1, subject: "explore", status: "completed" },
+    { id: id2, subject: "edit", status: "in_progress" },
+    { id: id3, subject: "verify", status: "pending" },
+  ] });
+  ok("task_write updates by id in place", r2.tasks.find(x => x.id === id1).status === "completed" && r2.tasks.find(x => x.id === id2).status === "in_progress");
+  ok("task_write does not duplicate ids", new Set(r2.tasks.map(x => x.id)).size === 3 && r2.tasks.length === 3);
+
+  // append a new task without id
+  const r3 = t.task_write({ tasks: [
+    { id: id1, subject: "explore", status: "completed" },
+    { id: id2, subject: "edit", status: "completed" },
+    { id: id3, subject: "verify", status: "in_progress" },
+    { subject: "commit", status: "pending" },
+  ] });
+  ok("task_write appends new task", r3.tasks.length === 4 && r3.tasks[3].subject === "commit" && r3.tasks[3].id);
+
+  // invalid status coerced to pending; bad input rejected
+  const r4 = t.task_write({ tasks: [{ subject: "weird", status: "bogus" }] });
+  ok("invalid status coerced to pending", r4.tasks[0].status === "pending");
+  ok("task_write rejects non-array", t.task_write({ tasks: "nope" }).ok === false);
+
+  // renderer reflects glyphs
+  const rendered = renderTasks(r3.tasks, makePalette(false));
+  ok("renderTasks shows completed/in_progress/pending glyphs", rendered.includes("✓") && rendered.includes("◐") && rendered.includes("☐"));
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });

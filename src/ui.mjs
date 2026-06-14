@@ -81,6 +81,66 @@ export function banner({ model, approval, cwd }, palette) {
   ].join("\n");
 }
 
+// --- plan-mode + task-management presentation ---------------------------------
+
+// Render a recorded plan as a numbered list. plan = { steps:[...], approved }.
+export function renderPlan(plan, palette) {
+  const p = palette || makePalette(false);
+  if (!plan || !Array.isArray(plan.steps) || !plan.steps.length) return p.dim("(no plan)");
+  const head = p.bold("plan") + p.dim(` (${plan.steps.length} step${plan.steps.length === 1 ? "" : "s"})`);
+  const body = plan.steps.map((s, i) => `  ${p.cyan(String(i + 1) + ".")} ${s}`).join("\n");
+  return head + "\n" + body;
+}
+
+const TASK_GLYPH = { pending: "☐", in_progress: "◐", completed: "✓" };
+
+// Render the live task checklist. tasks = [{id, subject, status}].
+export function renderTasks(tasks, palette) {
+  const p = palette || makePalette(false);
+  if (!Array.isArray(tasks) || !tasks.length) return p.dim("(no tasks)");
+  const lines = tasks.map((t) => {
+    const g = TASK_GLYPH[t.status] || "☐";
+    const mark = t.status === "completed" ? p.green(g)
+      : t.status === "in_progress" ? p.yellow(g) : p.dim(g);
+    const label = t.status === "completed" ? p.dim(t.subject) : t.subject;
+    return `  ${mark} ${label}`;
+  });
+  const done = tasks.filter(t => t.status === "completed").length;
+  return p.bold("tasks") + p.dim(` (${done}/${tasks.length})`) + "\n" + lines.join("\n");
+}
+
+// Three-way plan prompt: yes / edit / no. Returns "yes" | "edit" | "no". Non-TTY -> "no".
+// (auto-approval is handled by the caller before this is ever invoked.)
+export function planPrompt(question, { input = process.stdin, output = process.stdout } = {}) {
+  return new Promise((resolve) => {
+    if (!input.isTTY) { output.write(question + " [auto: non-interactive]\n"); return resolve("no"); }
+    const rl = readline.createInterface({ input, output });
+    rl.question(question + " [y]es / [e]dit / [n]o: ", (ans) => {
+      rl.close();
+      const a = (ans || "").trim().toLowerCase();
+      if (/^e/.test(a)) return resolve("edit");
+      if (/^n/.test(a)) return resolve("no");
+      resolve("yes"); // default yes
+    });
+  });
+}
+
+// Read a multi-line revised plan from the user (one step per line; blank line ends). Returns [steps].
+export function readPlanEdit({ input = process.stdin, output = process.stdout } = {}) {
+  return new Promise((resolve) => {
+    if (!input.isTTY) return resolve([]);
+    output.write("enter revised plan, one step per line; blank line to finish:\n");
+    const rl = readline.createInterface({ input, output });
+    const steps = [];
+    rl.prompt && rl.setPrompt("  · ");
+    rl.on("line", (line) => {
+      if (!line.trim()) { rl.close(); return; }
+      steps.push(line.trim());
+    });
+    rl.on("close", () => resolve(steps));
+  });
+}
+
 // y/N confirmation on a fresh readline (used outside the main REPL rl to avoid event tangles).
 // Returns a Promise<boolean>. Default is NO. Honors a non-TTY stdin by returning false.
 export function confirm(question, { input = process.stdin, output = process.stdout } = {}) {

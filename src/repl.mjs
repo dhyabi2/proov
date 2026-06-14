@@ -6,8 +6,8 @@
 // a second Ctrl-C at the prompt exits. REPL commands: /help /model /cost /reset /exit.
 
 import readline from "node:readline";
-import { Session } from "./agent.mjs";
-import { makePalette, colorEnabled, stepLine, footer, banner, confirm } from "./ui.mjs";
+import { Session, planGate } from "./agent.mjs";
+import { makePalette, colorEnabled, stepLine, footer, banner, confirm, renderPlan, renderTasks, planPrompt, readPlanEdit } from "./ui.mjs";
 import { renderDiff, diffStat } from "./diff.mjs";
 import { isDestructive, needsApproval } from "./safety.mjs";
 import { applyEdit as _applyEdit } from "./seal.mjs";
@@ -25,6 +25,7 @@ const HELP = `commands:
   /help            show this help
   /model <id>      switch model (e.g. anthropic/claude-sonnet-4, openai/gpt-4o)
   /cost            show session tokens + cost so far
+  /plan [on|off]   toggle plan-mode (agent must plan + get approval before editing)
   /reset           clear the conversation context (keeps cost totals)
   /exit            quit
 anything else is sent to the agent as a request. Ctrl-C interrupts the current turn.`;
@@ -56,7 +57,22 @@ export async function startRepl({ workdir, config, palette } = {}) {
     setTimeout(() => { sigintArmed = false; }, 1500);
   });
 
-  // beforeTool: enforce hard blocklist + approval prompts.
+  // Plan-approval (interactive): show the recorded plan and ask y/e/n. Edit replaces the steps.
+  const approvePlan = async () => {
+    const pl = session.tools.plan;
+    if (!pl || pl.approved) return;
+    process.stdout.write("\n" + renderPlan(pl, p) + "\n");
+    if (approval === "auto") { pl.approved = true; process.stdout.write(p.dim("  (auto-approved)\n")); return; }
+    const verdict = await planPrompt("proceed?");
+    if (verdict === "yes") pl.approved = true;
+    else if (verdict === "edit") {
+      const steps = await readPlanEdit();
+      if (steps.length) { session.tools.plan = { steps, approved: true }; process.stdout.write(renderPlan(session.tools.plan, p) + "\n"); }
+      else pl.approved = true;
+    } else session.tools._planAborted = true;
+  };
+
+  // beforeTool: enforce hard blocklist + plan-gate + approval prompts.
   const beforeTool = async ({ tool, args }) => {
     if (tool === "run_command") {
       const verdict = isDestructive(args.command || "");
@@ -64,6 +80,12 @@ export async function startRepl({ workdir, config, palette } = {}) {
         process.stdout.write(p.red(`  ⛔ blocked: ${args.command}\n`) + p.dim(`     (${verdict.why})\n`));
         return { deny: true, reason: `refused — ${verdict.why} (hard safety block)` };
       }
+    }
+    if (session.tools.planMode) {
+      await approvePlan();
+      if (session.tools._planAborted) { session.tools._planAborted = false; return { deny: true, reason: "user aborted the plan; stop and call done." }; }
+      const g = planGate({ tool, tools: session.tools });
+      if (g.deny) { process.stdout.write(p.yellow(`  ∅ ${tool} blocked — ${g.reason}\n`)); return g; }
     }
     if (needsApproval(tool, approval)) {
       // Show the action (and a diff preview for edits where we can compute it cheaply).
@@ -83,6 +105,7 @@ export async function startRepl({ workdir, config, palette } = {}) {
     return { deny: false };
   };
 
+  let lastTasksRender = "";
   const onStep = ({ tool, args, result, denied }) => {
     if (tool === "done") return;
     const status = denied ? "skip" : result?.ok === false ? "fail" : "ok";
@@ -93,10 +116,21 @@ export async function startRepl({ workdir, config, palette } = {}) {
       extra = `+${stat.add} -${stat.del}` + (result.tier ? ` (${result.tier})` : "");
     } else if (tool === "run_command") {
       extra = result?.ok ? `exit 0` : `exit ${result?.exitCode ?? "?"}`;
+    } else if (tool === "parallel") {
+      extra = result?.ok ? `${result.count} subtasks @${result.cap}` : (result?.error || "");
+    } else if (tool === "plan") {
+      extra = result?.ok ? `${result.steps?.length || 0} steps` : "";
     } else if (result?.ok === false && result?.error) {
       extra = result.error;
     }
     process.stdout.write(stepLine({ tool, args, status, extra, palette: p }) + "\n");
+    if (tool === "parallel" && result?.ok) {
+      for (const r of result.results) process.stdout.write(p.dim(`    ↳ ${r.done ? "✓" : "·"} ${r.task.slice(0, 60)} — ${(r.summary || r.error || "").slice(0, 80)}\n`));
+    }
+    if (tool === "task_write" && result?.ok) {
+      const rt = renderTasks(session.tools.tasks, p);
+      if (rt !== lastTasksRender) { process.stdout.write(rt + "\n"); lastTasksRender = rt; }
+    }
     // For edits, print the compact diff under the step line (skip when we just showed it for approval).
     if ((tool === "edit_file" || tool === "create_file") && result?.ok && session.lastDiff && !needsApproval(tool, approval)) {
       const { before, after, path: dp } = session.lastDiff;
@@ -128,6 +162,8 @@ export async function startRepl({ workdir, config, palette } = {}) {
       }
 
       // A normal request -> run a turn (input paused so Ctrl-C maps to abort, not a new line).
+      // Each turn starts fresh wrt plan approval so a new request must be re-planned in plan-mode.
+      session.tools.plan = null; session.tools._planAborted = false;
       currentAbort = new AbortController();
       let res;
       try {
@@ -142,6 +178,7 @@ export async function startRepl({ workdir, config, palette } = {}) {
 
       if (res.aborted) process.stdout.write(p.yellow("\n(interrupted)\n"));
       else if (res.summary) process.stdout.write("\n" + res.summary + "\n");
+      if (session.tools.tasks.length) process.stdout.write("\n" + renderTasks(session.tools.tasks, p) + "\n");
       process.stdout.write(footer({ turns: res.turns, totalTokens: res.totals.totalTokens, cost: res.totals.cost, model: session.provider.model }, p) + "\n\n");
       safePrompt();
     }
@@ -186,6 +223,14 @@ async function handleCommand(command, ctx) {
     case "cost": {
       const t = session.totals();
       process.stdout.write(p.dim(`${t.calls} calls · ${t.promptTokens.toLocaleString()} in / ${t.completionTokens.toLocaleString()} out · ${t.totalTokens.toLocaleString()} tok · $${t.cost.toFixed(4)} · ${t.model}\n`));
+      return;
+    }
+    case "plan": {
+      const arg = (command.arg || "").toLowerCase();
+      if (arg === "on") session.tools.planMode = true;
+      else if (arg === "off") session.tools.planMode = false;
+      else session.tools.planMode = !session.tools.planMode;
+      process.stdout.write(p.green(`plan-mode ${session.tools.planMode ? "ON — agent will plan + ask before editing" : "OFF"}\n`));
       return;
     }
     case "reset":

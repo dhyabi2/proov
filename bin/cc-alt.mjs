@@ -14,10 +14,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, writeStarterConfig } from "../src/config.mjs";
-import { Session } from "../src/agent.mjs";
+import { Session, planGate } from "../src/agent.mjs";
 import { runBaseline } from "../src/baseline.mjs";
 import { startRepl } from "../src/repl.mjs";
-import { makePalette, colorEnabled, stepLine, footer } from "../src/ui.mjs";
+import { makePalette, colorEnabled, stepLine, footer, renderPlan, renderTasks, planPrompt, readPlanEdit } from "../src/ui.mjs";
 import { renderDiff, diffStat } from "../src/diff.mjs";
 import { isDestructive, needsApproval } from "../src/safety.mjs";
 
@@ -32,13 +32,14 @@ const VERSION = (() => {
 function parseArgs(argv) {
   const flags = {};
   const positional = [];
-  let baseline = false, init = false, help = false, version = false, auto = false;
+  let baseline = false, init = false, help = false, version = false, auto = false, plan = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--help" || a === "-h") help = true;
     else if (a === "--version" || a === "-v") version = true;
     else if (a === "--init") init = true;
     else if (a === "--baseline") baseline = true;
+    else if (a === "--plan") plan = true;
     else if (a === "--auto") { auto = true; flags.approval = "auto"; }
     else if (a === "--model") flags.model = argv[++i];
     else if (a === "--approval") flags.approval = argv[++i];
@@ -50,7 +51,7 @@ function parseArgs(argv) {
     else if (a.startsWith("--")) { /* ignore unknown flags */ }
     else positional.push(a);
   }
-  return { flags, positional, baseline, init, help, version, auto };
+  return { flags, positional, baseline, init, help, version, auto, plan };
 }
 
 const HELP = `cc-alt — configurable-LLM coding agent (any Claude/GPT/Gemini model via OpenRouter)
@@ -65,6 +66,7 @@ OPTIONS
   --model <id>                 model id (e.g. anthropic/claude-sonnet-4, openai/gpt-4o, google/gemini-2.5-flash)
   --approval <auto|edits|all>  when to ask before acting (default: edits)
   --auto                       shorthand for --approval auto (no prompts; destructive cmds still blocked)
+  --plan                       plan-mode: agent must produce + get approval for a numbered plan before editing
   --dir <path>                 working directory (default: cwd or the 2nd positional arg)
   --max-steps <n>              cap tool-calls per turn
   --baseline                   one-shot using the full-rewrite harness (for the cost benchmark)
@@ -83,20 +85,35 @@ EXAMPLES
   cc-alt config                                       # show resolved config`;
 
 // ---- one-shot ---------------------------------------------------------------
-async function runOneShot(task, dir, config, palette, { auto }) {
+async function runOneShot(task, dir, config, palette, { auto, plan }) {
   const p = palette;
   const session = new Session(dir, {
     model: config.model, apiKey: config.apiKey, baseUrl: config.baseUrl,
     maxSteps: config.maxSteps, maxTokensPerTurn: config.maxTokensPerTurn,
+    planMode: !!plan,
   });
   if (!session.provider.hasKey()) {
     process.stderr.write(p.yellow("warning: no API key (set OPENROUTER_API_KEY or apiKey in .cc-alt.json)\n"));
   }
   const approval = auto ? "auto" : config.approval;
-  process.stderr.write(p.dim(`cc-alt · model ${config.model} · ${path.resolve(dir)}\n`));
+  process.stderr.write(p.dim(`cc-alt · model ${config.model} · ${path.resolve(dir)}${plan ? " · plan-mode" : ""}\n`));
 
-  // In one-shot, non-interactive: hard-block destructive commands; for non-auto, deny actions that
-  // would normally need approval (no TTY to ask), so the agent stays safe by default.
+  // Plan-approval: when a plan exists but isn't approved yet, approve it (auto/non-TTY -> auto-approve
+  // but still SHOW it; interactive -> y/e/n). Edit lets the user replace the steps.
+  const approvePlan = async () => {
+    const pl = session.tools.plan;
+    if (!pl || pl.approved) return;
+    process.stderr.write("\n" + renderPlan(pl, p) + "\n");
+    if (auto || !process.stdin.isTTY) { pl.approved = true; process.stderr.write(p.dim("  (auto-approved)\n")); return; }
+    const verdict = await planPrompt("proceed?");
+    if (verdict === "yes") { pl.approved = true; }
+    else if (verdict === "edit") {
+      const steps = await readPlanEdit();
+      if (steps.length) { session.tools.plan = { steps, approved: true }; process.stderr.write(renderPlan(session.tools.plan, p) + "\n"); }
+      else pl.approved = true;
+    } else { session.tools._planAborted = true; }
+  };
+
   const beforeTool = async ({ tool, args }) => {
     if (tool === "run_command") {
       const v = isDestructive(args.command || "");
@@ -105,14 +122,21 @@ async function runOneShot(task, dir, config, palette, { auto }) {
         return { deny: true, reason: `refused — ${v.why}` };
       }
     }
+    // plan-mode gate: block mutating tools until a plan is recorded + approved.
+    if (plan) {
+      await approvePlan();
+      if (session.tools._planAborted) return { deny: true, reason: "user aborted the plan; stop and call done." };
+      const g = planGate({ tool, tools: session.tools });
+      if (g.deny) { process.stderr.write(p.yellow(`  ∅ ${tool} blocked — ${g.reason}\n`)); return g; }
+    }
     if (approval !== "auto" && needsApproval(tool, approval) && !process.stdin.isTTY) {
-      // No interactive approval available in a pipe; tell the agent to proceed only via --auto.
       process.stderr.write(p.yellow(`  ∅ skipped ${tool} (needs approval; re-run with --auto to allow)\n`));
       return { deny: true, reason: "approval required but session is non-interactive; user must pass --auto" };
     }
     return { deny: false };
   };
 
+  let lastTasksRender = "";
   const onStep = ({ tool, args, result, denied }) => {
     if (tool === "done") return;
     const status = denied ? "skip" : result?.ok === false ? "fail" : "ok";
@@ -121,22 +145,33 @@ async function runOneShot(task, dir, config, palette, { auto }) {
       const s = diffStat(session.lastDiff.before, session.lastDiff.after);
       extra = `+${s.add} -${s.del}` + (result.tier ? ` (${result.tier})` : "");
     } else if (tool === "run_command") extra = result?.ok ? "exit 0" : `exit ${result?.exitCode ?? "?"}`;
+    else if (tool === "parallel") extra = result?.ok ? `${result.count} subtasks @${result.cap}` : (result?.error || "");
+    else if (tool === "plan") extra = result?.ok ? `${result.steps?.length || 0} steps` : "";
     process.stderr.write(stepLine({ tool, args, status, extra, palette: p }) + "\n");
     if ((tool === "edit_file" || tool === "create_file") && result?.ok && session.lastDiff) {
       const d = renderDiff(session.lastDiff.before, session.lastDiff.after, { color: p.enabled, path: session.lastDiff.path });
       if (d) process.stderr.write(d.split("\n").map(l => "    " + l).join("\n") + "\n");
     }
+    if (tool === "parallel" && result?.ok) {
+      for (const r of result.results) process.stderr.write(p.dim(`    ↳ ${r.done ? "✓" : "·"} ${r.task.slice(0, 60)} — ${(r.summary || r.error || "").slice(0, 80)}\n`));
+    }
+    // live checklist: re-render when task_write changes it.
+    if (tool === "task_write" && result?.ok) {
+      const r = renderTasks(session.tools.tasks, p);
+      if (r !== lastTasksRender) { process.stderr.write(r + "\n"); lastTasksRender = r; }
+    }
   };
 
   const res = await session.runTurn(task, { onStep, beforeTool });
   process.stderr.write("\n" + (res.summary ? res.summary + "\n" : ""));
+  if (session.tools.tasks.length) process.stderr.write("\n" + renderTasks(session.tools.tasks, p) + "\n");
   process.stderr.write(footer({ turns: res.turns, totalTokens: res.totals.totalTokens, cost: res.totals.cost, model: session.provider.model }, p) + "\n");
   return res.done ? 0 : 1;
 }
 
 // ---- main -------------------------------------------------------------------
 async function main() {
-  const { flags, positional, baseline, init, help, version, auto } = parseArgs(process.argv.slice(2));
+  const { flags, positional, baseline, init, help, version, auto, plan } = parseArgs(process.argv.slice(2));
   const palette = makePalette(colorEnabled());
   const p = palette;
 
@@ -177,7 +212,7 @@ async function main() {
       process.stderr.write(`\ndone=${res.done} turns=${res.turns} ${JSON.stringify(res.totals)}\n`);
       return res.done ? 0 : 1;
     }
-    return runOneShot(subcommand, dir, config, palette, { auto });
+    return runOneShot(subcommand, dir, config, palette, { auto, plan });
   }
 
   // REPL
