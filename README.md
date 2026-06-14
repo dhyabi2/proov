@@ -77,9 +77,19 @@ cc-alt config                print resolved config
 cc-alt --init                write a starter ./.cc-alt.json
 cc-alt mcp list              connect configured MCP servers and list their tools
 cc-alt mcp add <name> -- <command...>   add an MCP server to ./.cc-alt.json
+cc-alt skills                list skills    ·   cc-alt skill <name> [args]   run one
+cc-alt bg "<task>" [dir]     detached background run (POSIX)  ·  jobs / logs <id>
+cc-alt schedule "<task>" --in 30m|--at <ISO>|--cron "<expr>"   ·  schedule list / clear
+cc-alt scheduler [--daemon|status|stop] [--every <sec>]   run/manage the schedule poller
 flags: --model <id>  --approval <auto|edits|all>  --auto  --plan  --dir <path>  --max-steps <n>
        --baseline (one-shot full-rewrite harness, for the benchmark)  --help  --version
 ```
+
+**Robustness:** malformed model output, network/provider failures, missing/binary/oversized files,
+dead or slow MCP servers, and malformed config/skill/job files all degrade gracefully — they produce
+a clear error or are skipped with a warning, never an uncaught crash; oversized tool results are
+clipped so context doesn't blow up. `web_search` (OpenRouter web plugin) makes its own model call and
+returns its token usage so that cost isn't hidden from the session total.
 
 (`node bin/agent.mjs "<task>" <dir> [--baseline]` is still supported for the original benchmark.)
 
@@ -176,11 +186,15 @@ Use a **multimodal model** (e.g. `google/gemini-2.5-flash`). Just ask in plain l
 cc-alt "view_image screenshot.png and describe the error dialog" --auto
 cc-alt "view_pdf spec.pdf and summarize section 3" --auto
 ```
-Verified live: the agent read the word in a generated PNG and the colors, and extracted text from a
-PDF via the file-parser plugin. **Rough edge:** PDF support depends on OpenRouter's plugin and the
-chosen model; `pdf-text` handles text PDFs (not scanned-image PDFs — those need an OCR engine). If a
-model can't ingest the file block it will say so rather than hallucinate; fall back to extracting
-text yourself (`pdftotext`) and pasting it.
+Verified live: the agent read the word and colors in a generated PNG, and extracted text from a PDF.
+
+**PDF text extraction (with automatic local fallback).** For text PDFs cc-alt first tries OpenRouter's
+`file-parser` plugin (`pdf-text`). If that's unavailable or the model can't ingest the file block,
+`view_pdf` **automatically falls back to a local extractor** — `pdftotext` (poppler) or `mutool` if
+either is on your `PATH` — and returns the extracted text. If a PDF has **no extractable text** (a
+scanned/image PDF), it says so plainly (`no extractable text — likely a scanned PDF; OCR not
+supported`) instead of failing silently or hallucinating. So: text PDFs just work (plugin *or* local
+tool); scanned PDFs are clearly reported as needing OCR (out of scope).
 
 ### Skills — reusable prompt templates (`/skills`, slash-commands)
 
@@ -224,16 +238,24 @@ cc-alt jobs --watch                                   # repaint every 2s
 cc-alt logs <id>                                      # print that job's captured log
 
 cc-alt schedule "run the nightly check" --in 2h       # also: --at <ISO>  or  --cron "*/5 * * * *"
-cc-alt schedule list                                  # list scheduled jobs + next run time
-cc-alt scheduler                                      # foreground poller that fires due jobs
+cc-alt schedule list                                  # scheduled jobs, GROUPED active vs done, + next run
+cc-alt schedule clear                                 # prune completed once-jobs from the schedule
+
+# the poller (runs due jobs) — foreground OR as a detached background service:
+cc-alt scheduler                                      # foreground sleep-loop poller (Ctrl-C to stop)
+cc-alt scheduler --daemon                             # detach + write ~/.cc-alt/scheduler.pid
+cc-alt scheduler status                               # report running / not (reads the pidfile)
+cc-alt scheduler stop                                 # stop the detached poller
 ```
 **Honest about the design:** `cc-alt bg` spawns a real detached child (`spawn(..., {detached:true,
-stdio:'ignore'})`) on **macOS/Linux** — it has not been hardened for Windows. `cc-alt scheduler` is a
-**simple foreground sleep-loop poller** (default every 30s; `--every <sec>` to change), **not a system
-daemon**: scheduled jobs only fire while the poller is running, so keep it running (or background it
-with your shell / a launchd/systemd unit). When the poller hits a due job it spawns it in the
-background exactly like `cc-alt bg`; once-jobs are marked `done`, cron-jobs are rescheduled to their
-next time. The built-in cron parser supports the common 5-field forms (`*`, `*/n`, `a,b`, `a-b`).
+stdio:'ignore'})`) on **macOS/Linux**; on Windows (or if the detached spawn fails) it refuses with a
+clear message rather than crashing — background tasks need a POSIX shell. `cc-alt scheduler` is a
+**simple sleep-loop poller** (default every 30s; `--every <sec>`), **not a system cron daemon** —
+scheduled jobs only fire while it's running. Run it in the foreground, or `--daemon` it (it survives
+the terminal and is managed via `scheduler status` / `scheduler stop`), or wrap it in launchd/systemd
+for boot persistence. When the poller hits a due job it spawns it in the background exactly like
+`cc-alt bg`; once-jobs are marked `done` (clear them with `schedule clear`), cron-jobs are rescheduled
+to their next time. The built-in cron parser supports the common 5-field forms (`*`, `*/n`, `a,b`, `a-b`).
 
 ---
 
