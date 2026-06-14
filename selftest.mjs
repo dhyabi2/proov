@@ -1082,6 +1082,49 @@ console.log("== 27. find_refs — call-site / reference locator (Block 6) ==");
   ok("tool: find_refs requires a name", tools.find_refs({}).ok === false);
 }
 
+console.log("== 28. edit_symbol — replace a definition by name (Block 7) ==");
+{
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "es-"));
+  fs.writeFileSync(path.join(d, "a.js"), "export function add(a, b) {\n  // old body line 1\n  // old body line 2\n  return a - b;\n}\n\nexport const Z = 1;\nconst noBraces = x => x;\n");
+  fs.writeFileSync(path.join(d, "b.py"), "class Calc:\n    def mul(self, a, b):\n        # wrong\n        return a + b\n\nDONE = True\n");
+  fs.writeFileSync(path.join(d, "c.js"), "export function add(a, b) { return a + b; }\n"); // duplicate name in another file
+
+  // JS: replace the whole function; the model sends NO old body as an anchor.
+  const t = new Tools(d);
+  const r1 = t.edit_symbol({ name: "add", replacement: "export function add(a, b) {\n  return a + b;\n}", file: "a.js" });
+  ok("edit_symbol: JS replaces the whole function", r1.ok && fs.readFileSync(path.join(d, "a.js"), "utf8").includes("return a + b;") && !fs.readFileSync(path.join(d, "a.js"), "utf8").includes("old body"));
+  ok("edit_symbol: keeps the rest of the file", fs.readFileSync(path.join(d, "a.js"), "utf8").includes("export const Z = 1;"));
+  // MEASUREMENT: the replaced span (old body) is what edit_file would have required as an anchor in
+  // the model's OUTPUT; edit_symbol needs 0 anchor lines.
+  ok("edit_symbol: saves anchor lines (cost win)", r1.replacedLines === 5, "anchor lines avoided=" + r1.replacedLines);
+
+  // Python: reindents the replacement to the method's indent.
+  const t2 = new Tools(d);
+  const r2 = t2.edit_symbol({ name: "mul", replacement: "def mul(self, a, b):\n    return a * b" });
+  const py = fs.readFileSync(path.join(d, "b.py"), "utf8");
+  ok("edit_symbol: Python replaces + reindents to method indent", r2.ok && py.includes("    def mul(self, a, b):\n        return a * b") && py.includes("DONE = True"));
+
+  // Safety: ambiguous (two files), disambiguated by file; not-found; non-function; uncertain span.
+  const t3 = new Tools(d);
+  ok("edit_symbol: AMBIGUOUS across files without `file`", t3.edit_symbol({ name: "add", replacement: "x" }).error === "AMBIGUOUS");
+  ok("edit_symbol: `file` disambiguates", t3.edit_symbol({ name: "add", replacement: "export function add(){return 0;}", file: "c.js" }).ok === true);
+  const t4 = new Tools(d);
+  ok("edit_symbol: NOT_FOUND for unknown name", t4.edit_symbol({ name: "nope", replacement: "x" }).error === "NOT_FOUND");
+  ok("edit_symbol: NOT_FOUND for a non-function (const)", t4.edit_symbol({ name: "Z", replacement: "x" }).error === "NOT_FOUND");
+  ok("edit_symbol: SPAN_UNCERTAIN for a braceless arrow → safe fallback", t4.edit_symbol({ name: "noBraces", replacement: "const noBraces = y => y;" }).error === "SPAN_UNCERTAIN");
+  ok("edit_symbol: requires name + replacement", t4.edit_symbol({ name: "add" }).ok === false && t4.edit_symbol({ replacement: "x" }).ok === false);
+
+  // previewSymbolEdit is READ-ONLY (no write).
+  const t5 = new Tools(d);
+  const beforePv = fs.readFileSync(path.join(d, "b.py"), "utf8");
+  const pv = t5.previewSymbolEdit({ name: "mul", replacement: "def mul(self,a,b):\n    return 0" });
+  ok("edit_symbol: preview is read-only", pv.ok && pv.before != null && pv.after != null && fs.readFileSync(path.join(d, "b.py"), "utf8") === beforePv);
+
+  // needsApproval gates edit_symbol like other mutating tools
+  ok("edit_symbol: gated by approval (edits) but not auto", needsApproval("edit_symbol", "edits") === true && needsApproval("edit_symbol", "auto") === false);
+  fs.rmSync(d, { recursive: true, force: true });
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n== selftest: ${pass} passed, ${fail} failed ==`);
 process.exit(fail ? 1 : 0);

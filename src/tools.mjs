@@ -14,7 +14,15 @@ import { execSync, execFileSync } from "node:child_process";
 import { applyEdit } from "./seal.mjs";
 import { localPdfText } from "./pdftext.mjs";
 import { costUSD } from "./provider.mjs";
-import { buildSymbolIndex, findSymbol, findReferences, repoOverview } from "./repomap.mjs";
+import { buildSymbolIndex, findSymbol, findReferences, repoOverview, langOf, symbolSpan } from "./repomap.mjs";
+
+// Re-indent a replacement block to a target base indent (strip its own common indent, prepend target).
+function reindentBlock(block, indent) {
+  const lines = block.split("\n");
+  const nonEmpty = lines.filter(l => l.trim());
+  const min = nonEmpty.length ? Math.min(...nonEmpty.map(l => (l.match(/^[ \t]*/)[0].length))) : 0;
+  return lines.map(l => l.trim() ? indent + l.slice(min) : l).join("\n");
+}
 
 export class Tools {
   constructor(workdir, opts = {}) {
@@ -294,6 +302,44 @@ export class Tools {
     const refs = findReferences(this._index(), name);
     const calls = refs.filter(r => r.isCall).length;
     return { ok: true, name, count: refs.length, calls, references: refs.slice(0, 100) };
+  }
+
+  // Shared, READ-ONLY resolver for edit_symbol: find the unique definition, detect its span, and
+  // compute before/after. Returns {ok:false,error} on any uncertainty (CORRECTNESS-FIRST). No writes.
+  _resolveSymbolEdit({ name, replacement, file } = {}) {
+    if (!name) return { ok: false, error: "NO_NAME", hint: 'pass {"name":"...","replacement":"<new full definition>"}' };
+    if (replacement == null) return { ok: false, error: "NO_REPLACEMENT", hint: "pass the new full definition as `replacement`" };
+    const idx = this._index();
+    let defs = (idx.byName.get(name) || []).filter(s => ["function", "class", "method"].includes(s.kind));
+    if (file) defs = defs.filter(s => s.file === file || s.file.endsWith("/" + file));
+    if (!defs.length) return { ok: false, error: "NOT_FOUND", hint: "no function/class/method by that name — use find_symbol then edit_file" };
+    if (defs.length > 1) return { ok: false, error: "AMBIGUOUS", occurrences: defs.map(d => `${d.file}:${d.line}`), hint: "pass `file` to disambiguate, or use edit_file" };
+    const def = defs[0];
+    let abs; try { abs = this._resolve(def.file); } catch (e) { return { ok: false, error: e.message }; }
+    let before; try { before = fs.readFileSync(abs, "utf8"); } catch { return { ok: false, error: "READ_FAILED", path: def.file }; }
+    const span = symbolSpan(before, langOf(def.file), def.line);
+    if (!span) return { ok: false, error: "SPAN_UNCERTAIN", hint: "could not determine the symbol's exact span — use edit_file with an anchor" };
+    const lines = before.split("\n");
+    const indent = (lines[span.start].match(/^[ \t]*/) || [""])[0];
+    const repl = reindentBlock(String(replacement), indent);
+    const after = [...lines.slice(0, span.start), ...repl.split("\n"), ...lines.slice(span.end + 1)].join("\n");
+    return { ok: true, rel: def.file, abs, before, after, range: [span.start + 1, span.end + 1], replacedLines: span.end - span.start + 1 };
+  }
+
+  // edit_symbol (Block 7): replace a whole function/class/method by NAME — the model sends only the
+  // NEW definition, never the old body as an anchor (big output-token savings on large functions).
+  edit_symbol(a = {}) {
+    const r = this._resolveSymbolEdit(a);
+    if (!r.ok) return r;
+    fs.writeFileSync(r.abs, r.after);
+    this._symbolIndex = null;  // definitions changed → invalidate the cached index
+    return { ok: true, tier: "symbol", file: r.rel, path: r.rel, range: r.range, replacedLines: r.replacedLines };
+  }
+
+  // READ-ONLY preview (before/after) for the approval gate — does not write.
+  previewSymbolEdit(a = {}) {
+    const r = this._resolveSymbolEdit(a);
+    return r.ok ? { ok: true, path: r.rel, before: r.before, after: r.after, range: r.range } : r;
   }
 
   // web_fetch: GET a URL and return readable text (scripts/styles/tags stripped).
