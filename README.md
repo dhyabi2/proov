@@ -55,9 +55,9 @@ REPL commands: `/help` · `/model <id>` (switch model mid-session) · `/cost` (s
 ### Config (`cc-alt config`, `--init`)
 Resolved with precedence **flags > `./.cc-alt.json` > `~/.cc-alt.json` > env > defaults**. Keys:
 `model`, `apiKey` (prefer the `OPENROUTER_API_KEY` env var), `baseUrl` (default OpenRouter),
-`approval` (`auto`|`edits`|`all`), `maxSteps`, `maxTokensPerTurn`. **The model is fully
-configurable** — any OpenRouter id works: `anthropic/claude-sonnet-4`, `openai/gpt-4o`,
-`google/gemini-2.5-flash`, etc.
+`approval` (`auto`|`edits`|`all`), `maxSteps`, `maxTokensPerTurn`, and `mcpServers` (see
+[MCP](#mcp--connect-external-tool-servers)). **The model is fully configurable** — any OpenRouter id
+works: `anthropic/claude-sonnet-4`, `openai/gpt-4o`, `google/gemini-2.5-flash`, etc.
 
 ### Safety / approval modes
 - `auto` — never prompts (trusted flows / CI). **Destructive commands are still hard-blocked.**
@@ -75,6 +75,8 @@ cc-alt                       interactive REPL in the current directory
 cc-alt "<task>" [dir]        one-shot
 cc-alt config                print resolved config
 cc-alt --init                write a starter ./.cc-alt.json
+cc-alt mcp list              connect configured MCP servers and list their tools
+cc-alt mcp add <name> -- <command...>   add an MCP server to ./.cc-alt.json
 flags: --model <id>  --approval <auto|edits|all>  --auto  --plan  --dir <path>  --max-steps <n>
        --baseline (one-shot full-rewrite harness, for the benchmark)  --help  --version
 ```
@@ -121,6 +123,42 @@ UI renders it live (`☐` pending · `◐` in_progress · `✓` completed), keep
 **`--auto` — no prompts.** Skips *all* approval prompts (edits, commands, **and** plan approval) while
 the destructive-command **blocklist still fires** (`rm -rf /`, `sudo`, `curl … | sh`, etc. are refused
 even in `--auto`).
+
+### MCP — connect external tool servers
+
+cc-alt is an **MCP (Model Context Protocol) client** (stdio transport), the same extensibility
+Claude Code has. Point it at any MCP server and that server's tools become callable by the model as
+**namespaced tools** `mcp__<server>__<tool>` — they're appended to the system prompt (name + one-line
+description + a compact input-schema hint) and dispatched over JSON-RPC 2.0 to the server process.
+
+Configure servers in `./.cc-alt.json` (or `~/.cc-alt.json`) under an `mcpServers` block — the same
+shape Claude Desktop uses:
+```jsonc
+{
+  "model": "anthropic/claude-sonnet-4",
+  "mcpServers": {
+    "everything": {                                  // reference test server (echo/add/…)
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-everything"],
+      "env": {},                                     // optional extra env for the child
+      "disabled": false                              // set true to keep the entry but skip it
+    },
+    "fs": {                                           // filesystem server scoped to a dir
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/project"]
+    }
+  }
+}
+```
+Then:
+```
+cc-alt mcp list                                       # connect + print discovered tools per server
+cc-alt mcp add weather -- npx -y some-weather-mcp     # write a server entry into ./.cc-alt.json
+cc-alt "use mcp__everything__echo to echo 'hi'"       # the model calls the namespaced tool
+```
+When the REPL/one-shot starts it connects every enabled server, surfaces their tools, and **kills the
+child processes cleanly on exit**. A broken or missing server is reported and skipped — it never blocks
+the rest. If no `mcpServers` are configured, nothing changes and cc-alt behaves exactly as before.
 
 ---
 
@@ -223,6 +261,7 @@ sessions), neutral-to-slightly-worse on trivial edits.*
 - core: `src/provider.mjs` `src/tools.mjs` `src/loop.mjs` `src/agent.mjs` (`Session`) `src/baseline.mjs` `src/seal.mjs` (vendored)
 - daily-use layer: `src/config.mjs` (layered config) · `src/repl.mjs` (interactive session) ·
   `src/diff.mjs` (unified-diff renderer) · `src/safety.mjs` (blocklist + approval) · `src/ui.mjs` (colors/footer)
+- MCP client: `src/mcp.mjs` (stdio JSON-RPC client + tool catalog) · `test/stub-mcp.mjs` (local test server)
 - `bin/cc-alt.mjs` — main CLI · `bin/agent.mjs` — original benchmark CLI · `demo.mjs` — live side-by-side · `selftest.mjs` — deterministic (no LLM)
 - `bench/tasks.mjs` `bench/run.mjs` `bench/results.json` · `SPEC.md`
 
@@ -239,5 +278,6 @@ Reads `OPENROUTER_API_KEY` from the environment, or falls back to `web/.env.loca
 ### Tests
 `selftest.mjs` is fully deterministic (no LLM) and covers: the SEAL edit protocol, the tool
 sandbox, the stubbed agent loop, **config resolution/merge precedence**, the **destructive-command
-blocklist**, the **diff renderer**, **REPL command parsing**, UI formatting, and the **approval
-gate**. 60 checks, all green.
+blocklist**, the **diff renderer**, **REPL command parsing**, UI formatting, the **approval
+gate**, and the **MCP stdio client** (against a local stub server — connect, `tools/list`,
+`tools/call`, namespacing, and `Session` tool-registration/dispatch). 101 checks, all green.

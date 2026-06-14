@@ -9,6 +9,7 @@ import path from "node:path";
 import { Provider } from "./provider.mjs";
 import { Tools } from "./tools.mjs";
 import { runLoop } from "./loop.mjs";
+import { connectAll, closeAll, mcpPromptSection } from "./mcp.mjs";
 
 const SYSTEM = `You are cc-alt, a precise coding agent that edits a real repository.
 
@@ -170,8 +171,32 @@ export class Session {
     this.maxSteps = opts.maxSteps ?? 16;
     // diff capture: edit tools record { path, before, after } on the session for the UI to read.
     this.lastDiff = null;
+    // MCP state (populated by connectMCP, optional): connected clients + discovered tool catalog.
+    this.mcpClients = [];
+    this.mcpCatalog = [];
+    this.mcpErrors = [];
+    this.systemPrompt = SYSTEM; // augmented with an MCP section once servers connect.
     this.toolMap = this._buildToolMap();
   }
+
+  // Connect configured MCP servers (mcpServers in opts), register their tools into the toolMap
+  // under namespaced ids (mcp__<server>__<tool>), and append an MCP section to the system prompt.
+  // Idempotent-ish: safe to call once at session start. No-op when nothing is configured.
+  async connectMCP(mcpServers = this.opts.mcpServers) {
+    if (!mcpServers || typeof mcpServers !== "object") return { catalog: [], errors: [] };
+    const { clients, catalog, errors } = await connectAll(mcpServers);
+    this.mcpClients = clients;
+    this.mcpCatalog = catalog;
+    this.mcpErrors = errors;
+    for (const t of catalog) {
+      this.toolMap[t.id] = (a) => t.client.callTool(t.name, a || {});
+    }
+    if (catalog.length) this.systemPrompt = SYSTEM + mcpPromptSection(catalog);
+    return { catalog, errors };
+  }
+
+  // Kill MCP child processes. Call on session/process exit.
+  closeMCP() { closeAll(this.mcpClients); this.mcpClients = []; }
 
   _readSafe(rel) {
     try { return this.tools.read_file({ path: rel }); } catch { return { ok: false }; }
@@ -232,7 +257,7 @@ export class Session {
       provider: this.provider,
       tools: this.tools,
       toolMap: this.toolMap,
-      systemPrompt: SYSTEM,
+      systemPrompt: this.systemPrompt,
       task,
       maxSteps: this.maxSteps,
       seedMessages: this.messages || undefined,

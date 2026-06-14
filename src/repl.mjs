@@ -41,6 +41,12 @@ export async function startRepl({ workdir, config, palette } = {}) {
   if (!session.provider.hasKey()) {
     process.stdout.write(p.yellow("warning: no API key found — set OPENROUTER_API_KEY or apiKey in .cc-alt.json\n"));
   }
+  // Connect any configured MCP servers up front; their tools become callable as mcp__<server>__<tool>.
+  if (config.mcpServers) {
+    const { catalog, errors } = await session.connectMCP(config.mcpServers);
+    if (catalog.length) process.stdout.write(p.dim(`mcp · ${catalog.length} tool(s) from ${session.mcpClients.length} server(s)\n`));
+    for (const e of errors) process.stdout.write(p.yellow(`mcp · ${e.server} failed: ${e.error}\n`));
+  }
   process.stdout.write(banner({ model: config.model, approval, cwd: workdir }, p) + "\n\n");
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: p.cyan("cc-alt› ") });
@@ -193,6 +199,7 @@ export async function startRepl({ workdir, config, palette } = {}) {
   await done;
 
   if (!closed) rl.close();
+  session.closeMCP();
   const t = session.totals();
   process.stdout.write(p.dim(`\nsession: ${t.calls} calls · ${t.totalTokens.toLocaleString()} tok · $${t.cost.toFixed(4)}\n`));
   process.stdout.write(p.dim("bye.\n"));

@@ -20,6 +20,7 @@ import { startRepl } from "../src/repl.mjs";
 import { makePalette, colorEnabled, stepLine, footer, renderPlan, renderTasks, planPrompt, readPlanEdit } from "../src/ui.mjs";
 import { renderDiff, diffStat } from "../src/diff.mjs";
 import { isDestructive, needsApproval } from "../src/safety.mjs";
+import { connectAll, closeAll } from "../src/mcp.mjs";
 
 const VERSION = (() => {
   try {
@@ -95,6 +96,12 @@ async function runOneShot(task, dir, config, palette, { auto, plan }) {
   if (!session.provider.hasKey()) {
     process.stderr.write(p.yellow("warning: no API key (set OPENROUTER_API_KEY or apiKey in .cc-alt.json)\n"));
   }
+  // Connect any configured MCP servers; their tools become callable as mcp__<server>__<tool>.
+  if (config.mcpServers) {
+    const { catalog, errors } = await session.connectMCP(config.mcpServers);
+    if (catalog.length) process.stderr.write(p.dim(`mcp · ${catalog.length} tool(s) from ${session.mcpClients.length} server(s)\n`));
+    for (const e of errors) process.stderr.write(p.yellow(`mcp · ${e.server} failed: ${e.error}\n`));
+  }
   const approval = auto ? "auto" : config.approval;
   process.stderr.write(p.dim(`cc-alt · model ${config.model} · ${path.resolve(dir)}${plan ? " · plan-mode" : ""}\n`));
 
@@ -162,11 +169,79 @@ async function runOneShot(task, dir, config, palette, { auto, plan }) {
     }
   };
 
-  const res = await session.runTurn(task, { onStep, beforeTool });
+  let res;
+  try {
+    res = await session.runTurn(task, { onStep, beforeTool });
+  } finally {
+    session.closeMCP();
+  }
   process.stderr.write("\n" + (res.summary ? res.summary + "\n" : ""));
   if (session.tools.tasks.length) process.stderr.write("\n" + renderTasks(session.tools.tasks, p) + "\n");
   process.stderr.write(footer({ turns: res.turns, totalTokens: res.totals.totalTokens, cost: res.totals.cost, model: session.provider.model }, p) + "\n");
   return res.done ? 0 : 1;
+}
+
+// ---- mcp subcommand ---------------------------------------------------------
+//   cc-alt mcp list                       connect configured servers, print their tools
+//   cc-alt mcp add <name> -- <command...> write a server into ./.cc-alt.json
+async function runMcpCommand(args, config, p) {
+  const sub = args[0];
+
+  if (sub === "add") {
+    // Re-read the raw argv so the `-- <command...>` part survives the flag parser.
+    const raw = process.argv.slice(2);
+    const i = raw.indexOf("add");
+    const after = raw.slice(i + 1);
+    const dashdash = after.indexOf("--");
+    const name = after[0];
+    if (!name || dashdash === -1 || dashdash === 0) {
+      process.stderr.write(p.yellow("usage: cc-alt mcp add <name> -- <command> [args...]\n"));
+      return 1;
+    }
+    const cmd = after.slice(dashdash + 1);
+    if (!cmd.length) { process.stderr.write(p.yellow("no command after --\n")); return 1; }
+    const target = path.join(process.cwd(), ".cc-alt.json");
+    let cfg = {};
+    try { if (fs.existsSync(target)) cfg = JSON.parse(fs.readFileSync(target, "utf8")); } catch { cfg = {}; }
+    cfg.mcpServers = cfg.mcpServers || {};
+    cfg.mcpServers[name] = { command: cmd[0], args: cmd.slice(1), env: {} };
+    fs.writeFileSync(target, JSON.stringify(cfg, null, 2) + "\n");
+    process.stdout.write(p.green(`added mcp server "${name}" → ${target}\n`));
+    process.stdout.write(p.dim(`  ${cmd.join(" ")}\n`));
+    return 0;
+  }
+
+  if (sub && sub !== "list") {
+    process.stderr.write(p.yellow(`unknown: cc-alt mcp ${sub}\nusage: cc-alt mcp list | cc-alt mcp add <name> -- <command...>\n`));
+    return 1;
+  }
+
+  // default: list
+  if (!config.mcpServers || !Object.keys(config.mcpServers).length) {
+    process.stdout.write(p.dim("no mcpServers configured (add an \"mcpServers\" block to .cc-alt.json or run: cc-alt mcp add <name> -- <command...>)\n"));
+    return 0;
+  }
+  process.stderr.write(p.dim("connecting MCP servers…\n"));
+  const { clients, catalog, errors } = await connectAll(config.mcpServers);
+  try {
+    const byServer = new Map();
+    for (const t of catalog) {
+      if (!byServer.has(t.server)) byServer.set(t.server, []);
+      byServer.get(t.server).push(t);
+    }
+    for (const [server, tools] of byServer) {
+      process.stdout.write(p.bold(`\n${server}`) + p.dim(`  (${tools.length} tool${tools.length === 1 ? "" : "s"})`) + "\n");
+      for (const t of tools) {
+        const desc = (t.description || "").replace(/\s+/g, " ").trim().slice(0, 80);
+        process.stdout.write(`  ${p.cyan(t.id)}  ${p.gray(desc)}\n`);
+      }
+    }
+    for (const e of errors) process.stdout.write(p.red(`\n${e.server}: ${e.error}\n`));
+    if (!catalog.length && !errors.length) process.stdout.write(p.dim("no tools discovered.\n"));
+  } finally {
+    closeAll(clients);
+  }
+  return 0;
 }
 
 // ---- main -------------------------------------------------------------------
@@ -198,6 +273,10 @@ async function main() {
     process.stdout.write(p.gray(`  local: ${paths.local}${fs.existsSync(paths.local) ? "" : " (none)"}\n`));
     process.stdout.write(p.gray(`  home:  ${paths.home}${fs.existsSync(paths.home) ? "" : " (none)"}\n`));
     return 0;
+  }
+
+  if (subcommand === "mcp") {
+    return runMcpCommand(positional.slice(1), config, p);
   }
 
   // One-shot vs REPL: a task string => one-shot. No task => REPL.

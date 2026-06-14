@@ -51,6 +51,10 @@ function sanitize(obj, source) {
     if (k === "approval" && !APPROVAL_MODES.includes(v)) continue;
     out[k] = v;
   }
+  // mcpServers is a structured passthrough (not a scalar): keep it verbatim if it's an object.
+  if (obj.mcpServers && typeof obj.mcpServers === "object" && !Array.isArray(obj.mcpServers)) {
+    out.mcpServers = obj.mcpServers;
+  }
   return out;
 }
 
@@ -119,7 +123,12 @@ export const STARTER_CONFIG = {
   maxSteps: 16,
   maxTokensPerTurn: 4000,
   "//apiKey": "prefer the OPENROUTER_API_KEY env var over storing the key here",
-  "//model": "any OpenRouter model id works: anthropic/claude-sonnet-4, openai/gpt-4o, google/gemini-2.5-flash"
+  "//model": "any OpenRouter model id works: anthropic/claude-sonnet-4, openai/gpt-4o, google/gemini-2.5-flash",
+  "//mcpServers": "optional: connect external MCP servers; their tools appear as mcp__<server>__<tool>",
+  mcpServers: {
+    "//example": "remove the leading // to enable; Claude-Desktop-compatible shape",
+    "//everything": { command: "npx", args: ["-y", "@modelcontextprotocol/server-everything"], env: {}, disabled: true }
+  }
 };
 
 export function writeStarterConfig(cwd = process.cwd()) {

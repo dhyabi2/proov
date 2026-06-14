@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { applyEdit } from "./src/seal.mjs";
 import { Tools } from "./src/tools.mjs";
 import { runLoop } from "./src/loop.mjs";
@@ -328,6 +329,65 @@ console.log("== 12. task_write list state transitions (no LLM) ==");
   // renderer reflects glyphs
   const rendered = renderTasks(r3.tasks, makePalette(false));
   ok("renderTasks shows completed/in_progress/pending glyphs", rendered.includes("✓") && rendered.includes("◐") && rendered.includes("☐"));
+}
+
+console.log("== 13. MCP stdio client (against local stub server, no network) ==");
+{
+  const { connectAll, closeAll, sanitize, nsName, mcpPromptSection, MCPClient } = await import("./src/mcp.mjs");
+  const stub = path.join(path.dirname(fileURLToPath(import.meta.url)), "test", "stub-mcp.mjs");
+
+  // name sanitization + namespacing
+  ok("sanitize strips non-word chars", sanitize("@scope/pkg-name.v2") === "_scope_pkg_name_v2");
+  ok("nsName builds mcp__server__tool", nsName("everything", "echo") === "mcp__everything__echo");
+
+  const mcpServers = { stub: { command: "node", args: [stub] } };
+  const { clients, catalog, errors } = await connectAll(mcpServers);
+  try {
+    ok("connectAll connected the stub server", clients.length === 1 && errors.length === 0, JSON.stringify(errors));
+    const names = catalog.map((t) => t.name).sort();
+    ok("tools/list returns echo + add", names.join(",") === "add,echo", names.join(","));
+    ok("catalog namespaces tool ids", catalog.some((t) => t.id === "mcp__stub__echo") && catalog.some((t) => t.id === "mcp__stub__add"));
+    ok("catalog carries inputSchema", catalog.find((t) => t.name === "add").inputSchema.properties.a.type === "number");
+
+    const echoTool = catalog.find((t) => t.name === "echo");
+    const r1 = await echoTool.client.callTool("echo", { text: "hi" });
+    ok("callTool echo returns 'hi'", r1.ok && r1.text === "hi", JSON.stringify(r1));
+
+    const addTool = catalog.find((t) => t.name === "add");
+    const r2 = await addTool.client.callTool("add", { a: 2, b: 3 });
+    ok("callTool add(2,3) returns 5", r2.ok && r2.text === "5", JSON.stringify(r2));
+
+    // isError surfacing for an unknown tool
+    const r3 = await echoTool.client.callTool("nope", {});
+    ok("unknown tool flagged isError", r3.isError === true && r3.ok === false);
+
+    // prompt section lists the tools with their schema
+    const section = mcpPromptSection(catalog);
+    ok("prompt section names the namespaced tools", section.includes("mcp__stub__echo") && section.includes("mcp__stub__add"));
+    ok("prompt section shows required field marker", section.includes('"text":"string*"'));
+  } finally {
+    closeAll(clients);
+  }
+
+  // empty / disabled config -> no-op
+  const none = await connectAll(undefined);
+  ok("connectAll(undefined) is a clean no-op", none.clients.length === 0 && none.catalog.length === 0);
+  const disabled = await connectAll({ x: { command: "node", args: [stub], disabled: true } });
+  ok("disabled server is skipped", disabled.clients.length === 0);
+
+  // Session integration: connectMCP registers namespaced tools + augments the system prompt.
+  const { Session } = await import("./src/agent.mjs");
+  const sess = new Session(tmp, { apiKey: "" });
+  const beforePrompt = sess.systemPrompt;
+  await sess.connectMCP({ stub: { command: "node", args: [stub] } });
+  try {
+    ok("Session registers mcp tools in toolMap", typeof sess.toolMap["mcp__stub__echo"] === "function" && typeof sess.toolMap["mcp__stub__add"] === "function");
+    ok("Session augments the system prompt", sess.systemPrompt.length > beforePrompt.length && sess.systemPrompt.includes("mcp__stub__add"));
+    const dispatched = await sess.toolMap["mcp__stub__add"]({ a: 10, b: 5 });
+    ok("Session dispatches an mcp tool call", dispatched.ok && dispatched.text === "15", JSON.stringify(dispatched));
+  } finally {
+    sess.closeMCP();
+  }
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });
