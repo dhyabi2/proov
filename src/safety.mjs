@@ -85,7 +85,7 @@ export function isDestructive(command) {
 //   'all'   : prompt before every mutating/effecting action (run_command, edit, create).
 // kind ∈ {'run_command','edit_file','edit_files','create_file','write_file', other}.
 export function needsApproval(kind, mode = "edits") {
-  const mutating = kind === "edit_file" || kind === "edit_files" || kind === "create_file" || kind === "write_file";
+  const mutating = kind === "edit_file" || kind === "edit_files" || kind === "edit_symbol" || kind === "create_file" || kind === "write_file";
   const effecting = kind === "run_command";
   if (mode === "auto") return false;
   if (mode === "all") return mutating || effecting;

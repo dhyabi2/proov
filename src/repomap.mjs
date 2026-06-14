@@ -132,6 +132,50 @@ export function buildSymbolIndex(workdir, { maxFiles = 5000, maxBytes = 600_000 
   return { root, files, symbols, byName, allFiles };
 }
 
+export function langOf(file) { return LANG_BY_EXT[path.extname(file)] || null; }
+
+const BRACE_LANGS = new Set(["js", "go", "rust", "java", "c"]);
+
+// Mask string literals + // line comments on a line so braces inside them aren't counted.
+function maskLine(line) {
+  return line.replace(/\/\/.*$/, "").replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, '""');
+}
+
+// SAFE span detection (Block 7): given a definition's start line, return the {start,end} (0-based,
+// inclusive) line range of its full body — by brace-matching (JS/Go/Rust/Java/C) or indent (Python).
+// Returns null when uncertain (no body braces, unbalanced, one-liner) so callers fall back to edit_file
+// rather than risk a wrong-span edit. CORRECTNESS-FIRST, in the spirit of SEAL.
+export function symbolSpan(text, lang, defLine1) {
+  const lines = text.split("\n");
+  const i0 = defLine1 - 1;
+  if (i0 < 0 || i0 >= lines.length) return null;
+  if (lang === "py") {
+    const indent = (lines[i0].match(/^[ \t]*/) || [""])[0].length;
+    let end = i0;
+    for (let i = i0 + 1; i < lines.length; i++) {
+      if (!lines[i].trim()) continue;                                   // blanks may be inside the body
+      const ind = (lines[i].match(/^[ \t]*/) || [""])[0].length;
+      if (ind <= indent) break;                                         // dedent → body ended
+      end = i;
+    }
+    return end > i0 ? { start: i0, end } : null;                        // require a real (indented) body
+  }
+  if (BRACE_LANGS.has(lang)) {
+    let depth = 0, started = false, end = -1;
+    const limit = Math.min(lines.length, i0 + 4000);
+    for (let i = i0; i < limit; i++) {
+      for (const ch of maskLine(lines[i])) {
+        if (ch === "{") { depth++; started = true; }
+        else if (ch === "}") { depth--; if (started && depth === 0) { end = i; break; } }
+      }
+      if (end !== -1) break;
+      if (!started && i - i0 > 3) return null;                          // no body brace nearby → bail
+    }
+    return (started && end !== -1) ? { start: i0, end } : null;
+  }
+  return null;
+}
+
 // On-demand detail: exact definition location(s) for a name. Falls back to case-insensitive and then
 // substring matching so a slightly-wrong name from the model still resolves (cheap fuzzy recovery).
 export function findSymbol(index, name) {

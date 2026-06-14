@@ -35,6 +35,7 @@ You work ONE tool call at a time. Respond with EXACTLY ONE JSON object, nothing 
   {"tool":"edit_file","args":{"path":"f.js","anchor":"<verbatim existing lines>","replacement":"<new lines>","op":"replace"}}
   {"tool":"create_file","args":{"path":"new.js","content":"<full content of a brand-NEW file>"}}
   {"tool":"edit_files","args":{"edits":[{"path":"a.js","anchor":"...","replacement":"...","op":"replace"},{"path":"b.js","anchor":"...","replacement":"..."}]}}
+  {"tool":"edit_symbol","args":{"name":"functionOrClassName","replacement":"<the FULL new definition>"}}
   {"tool":"git_status","args":{}}
   {"tool":"git_diff","args":{"path":"optional/file"}}
   {"tool":"git_log","args":{"n":10}}
@@ -46,6 +47,9 @@ EDIT PROTOCOL (important — this is how you keep edits cheap and correct):
   file (enough lines to be unique, but no more). "replacement" is the new text for that snippet.
 - op is "replace" (default), "insert_after", or "insert_before".
 - Do NOT rewrite whole files. Make targeted edits with edit_file.
+- To replace an ENTIRE function/class/method, prefer edit_symbol — pass its name + the FULL new
+  definition; you do NOT copy the old body as an anchor (cheaper for large functions). For a small
+  change INSIDE a function, use edit_file with a small anchor.
 - For SEVERAL edits at once (across one or more files), prefer edit_files — it applies them
   ATOMICALLY (all-or-nothing) in fewer turns; same anchor rules. If any edit fails, none apply
   and you get repair packets for the failing ones.
@@ -112,6 +116,7 @@ export function makeAgent(workdir, opts = {}) {
     edit_file: (a) => tools.edit_file(a),
     create_file: (a) => tools.create_file(a),
     edit_files: (a) => tools.edit_files(a),
+    edit_symbol: (a) => tools.edit_symbol(a),
     git_status: (a) => tools.git_status(a),
     git_diff: (a) => tools.git_diff(a),
     git_log: (a) => tools.git_log(a),
@@ -378,6 +383,15 @@ export class Session {
       this.lastDiff = null;
       return res;
     };
+    // edit_symbol: capture the before/after of the resolved file for the streaming diff.
+    const captureSymbolEdit = (a) => {
+      const pv = t.previewSymbolEdit(a);
+      const res = t.edit_symbol(a);
+      if (res && res.ok && pv.ok) this.lastDiff = { path: pv.path, before: pv.before, after: pv.after, kind: "edit_symbol" };
+      else this.lastDiff = null;
+      this.lastDiffs = null;
+      return res;
+    };
     return {
       read_file: (a) => t.read_file(a),
       list_dir: (a) => t.list_dir(a),
@@ -389,6 +403,7 @@ export class Session {
       edit_file: captureEdit("edit_file", (a) => t.edit_file(a)),
       create_file: captureEdit("create_file", (a) => t.create_file(a)),
       edit_files: captureEdits,
+      edit_symbol: captureSymbolEdit,
       git_status: (a) => t.git_status(a),
       git_diff: (a) => t.git_diff(a),
       git_log: (a) => t.git_log(a),

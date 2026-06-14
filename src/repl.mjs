@@ -162,6 +162,11 @@ export async function startRepl({ workdir, config, palette } = {}) {
           : p.yellow("  (preview unavailable — anchor may not match; you'd be approving blind)"));
       } else if (tool === "create_file") {
         preview = p.dim(`  create ${args.path}`) + "\n" + renderDiff("", args.content || "", { color: p.enabled, path: args.path });
+      } else if (tool === "edit_symbol") {
+        const pv = session.tools.previewSymbolEdit(args);
+        preview = pv.ok
+          ? p.dim(`  edit_symbol ${args.name} → ${pv.path}:${pv.range[0]}-${pv.range[1]}`) + "\n" + renderDiff(pv.before, pv.after, { color: p.enabled, path: pv.path })
+          : p.dim(`  edit_symbol ${args.name}`) + p.yellow(`  (cannot preview: ${pv.error})`);
       } else if (tool === "edit_files") {
         const previews = previewEdits(session, args);
         const n = Array.isArray(args.edits) ? args.edits.length : 0;
@@ -191,7 +196,7 @@ export async function startRepl({ workdir, config, palette } = {}) {
     const parallelPartial = tool === "parallel" && result?.ok && result.failed > 0;
     const status = denied ? "skip" : (result?.ok === false || parallelPartial) ? "fail" : "ok";
     let extra = "";
-    if ((tool === "edit_file" || tool === "create_file") && result?.ok && session.lastDiff) {
+    if ((tool === "edit_file" || tool === "create_file" || tool === "edit_symbol") && result?.ok && session.lastDiff) {
       const { before, after } = session.lastDiff;
       const stat = diffStat(before, after);
       extra = `+${stat.add} -${stat.del}` + (result.tier ? ` (${result.tier})` : "");
@@ -218,7 +223,7 @@ export async function startRepl({ workdir, config, palette } = {}) {
     }
     // For edits, print the compact diff under the step line (skip when we just showed it for approval).
     const showDiff = !needsApproval(tool, approval) && !approveAll;
-    if ((tool === "edit_file" || tool === "create_file") && result?.ok && session.lastDiff && showDiff) {
+    if ((tool === "edit_file" || tool === "create_file" || tool === "edit_symbol") && result?.ok && session.lastDiff && showDiff) {
       const { before, after, path: dp } = session.lastDiff;
       const d = renderDiff(before, after, { color: p.enabled, path: dp, context: 2 });
       if (d) process.stdout.write(d.split("\n").map(l => "    " + l).join("\n") + "\n");

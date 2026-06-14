@@ -223,7 +223,7 @@ async function runOneShot(task, dir, config, palette, { auto, plan, verify, repa
     if (tool === "done") return;
     const status = denied ? "skip" : result?.ok === false ? "fail" : "ok";
     let extra = "";
-    if ((tool === "edit_file" || tool === "create_file") && result?.ok && session.lastDiff) {
+    if ((tool === "edit_file" || tool === "create_file" || tool === "edit_symbol") && result?.ok && session.lastDiff) {
       const s = diffStat(session.lastDiff.before, session.lastDiff.after);
       extra = `+${s.add} -${s.del}` + (result.tier ? ` (${result.tier})` : "");
     } else if (tool === "edit_files" && result?.ok && session.lastDiffs) {
@@ -234,7 +234,7 @@ async function runOneShot(task, dir, config, palette, { auto, plan, verify, repa
     else if (tool === "parallel") extra = result?.ok ? `${result.count} subtasks @${result.cap}${result.failed ? `, ${result.failed} failed` : ""}` : (result?.error || "");
     else if (tool === "plan") extra = result?.ok ? `${result.steps?.length || 0} steps` : "";
     process.stderr.write(stepLine({ tool, args, status, extra, palette: p }) + "\n");
-    if ((tool === "edit_file" || tool === "create_file") && result?.ok && session.lastDiff) {
+    if ((tool === "edit_file" || tool === "create_file" || tool === "edit_symbol") && result?.ok && session.lastDiff) {
       const d = renderDiff(session.lastDiff.before, session.lastDiff.after, { color: p.enabled, path: session.lastDiff.path });
       if (d) process.stderr.write(d.split("\n").map(l => "    " + l).join("\n") + "\n");
     }
