@@ -5,6 +5,12 @@ explores a repo, makes **compact anchor-based edits** with a **live colored diff
 asks before risky actions, and stops when the task is verifiably done — driven by **any** model you
 plug in (Claude / GPT / Gemini) over OpenRouter.
 
+> **The real invention** is the edit engine: a *correctness-first compact-edit protocol* that lets the
+> agent change code **without ever re-sending whole files** — so edits are dramatically **cheaper**
+> (up to ~99% on large files, where full-rewrite tools even *fail*) and structurally **safer** (it
+> refuses ambiguous anchors instead of silently editing the wrong place), on **any** model.
+> Full deep-dive — mechanism, measured results, honest scope, and how it was invented: **[INVENTION.md](INVENTION.md)**.
+
 ## Quickstart (daily use)
 
 ```bash
