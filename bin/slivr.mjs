@@ -13,6 +13,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 import { loadConfig, writeStarterConfig } from "../src/config.mjs";
 import { Session, planGate } from "../src/agent.mjs";
 import { runBaseline } from "../src/baseline.mjs";
@@ -86,6 +87,7 @@ USAGE
   slivr scheduler --daemon    start the poller DETACHED (pidfile ~/.slivr/scheduler.pid)
   slivr scheduler status      report whether the daemon is running
   slivr scheduler stop        stop the detached daemon
+  slivr upgrade [--check]     update slivr to the latest version (git checkout installs)
   slivr --init                write a starter ./.slivr.json
 
 OPTIONS
@@ -247,6 +249,78 @@ async function runOneShotInProcess(task, dir, log) {
 // ---- mcp subcommand ---------------------------------------------------------
 //   slivr mcp list                       connect configured servers, print their tools
 //   slivr mcp add <name> -- <command...> write a server into ./.slivr.json
+// slivr upgrade — update a git-checkout install (the curl|bash / clone path) to the latest version.
+// `--check` only reports whether a newer version is available without changing anything.
+function runUpgrade(args, p) {
+  const checkOnly = args.includes("--check");
+  const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+  const git = (...a) => execFileSync("git", ["-C", ROOT, ...a], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const verOf = () => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version; } catch { return "?"; } };
+
+  // Not a git checkout → can't self-update; tell the user how they installed and what to run.
+  if (!fs.existsSync(path.join(ROOT, ".git"))) {
+    process.stderr.write(p.yellow("slivr is not a git checkout, so `upgrade` can't update it in place.\n"));
+    process.stderr.write(p.dim("  • installed via npx:   re-run `npx github:dhyabi2/slivr` (always pulls latest)\n"));
+    process.stderr.write(p.dim("  • installed a tarball: re-run the installer:\n"));
+    process.stderr.write(p.dim("      curl -fsSL https://raw.githubusercontent.com/dhyabi2/slivr/main/install.sh | bash\n"));
+    return 1;
+  }
+
+  let branch = "main";
+  try { const b = git("rev-parse", "--abbrev-ref", "HEAD"); if (b && b !== "HEAD") branch = b; } catch {}
+
+  process.stderr.write(p.dim(`checking ${branch} @ ${ROOT} …\n`));
+  // NB: no --depth here. A shallow fetch severs the fetched commit's history locally, which would
+  // make the ancestor check below unable to see the fast-forward and wrongly cry "diverged".
+  try { git("fetch", "--quiet", "origin", branch); }
+  catch (e) { process.stderr.write(p.yellow(`could not reach the remote: ${String(e.message || e).split("\n")[0]}\n`)); return 1; }
+
+  const local = git("rev-parse", "HEAD");
+  let remote;
+  try { remote = git("rev-parse", "FETCH_HEAD"); } catch { remote = git("rev-parse", `origin/${branch}`); }
+
+  if (local === remote) { process.stderr.write(p.green(`already up to date (slivr ${verOf()}).\n`)); return 0; }
+
+  // upgrade only moves FORWARD: remote must be a descendant of local (local is an ancestor of remote).
+  // If the install is ahead of or diverged from origin, a hard reset would lose commits — refuse.
+  // Skip this on a SHALLOW checkout (the curl|bash `--depth 1` install): history is truncated so
+  // ancestry is undecidable, and such installs are never committed to — dirty-check + reset is safe.
+  const shallow = (() => { try { return git("rev-parse", "--is-shallow-repository") === "true"; } catch { return false; } })();
+  const isAncestor = (a, b) => { try { git("merge-base", "--is-ancestor", a, b); return true; } catch { return false; } };
+  if (!shallow && !isAncestor(local, remote)) {
+    process.stderr.write(p.yellow("your install is ahead of or has diverged from origin — not changing it.\n"));
+    process.stderr.write(p.dim(`  ${ROOT}\n  local ${local.slice(0, 7)} vs remote ${remote.slice(0, 7)}\n`));
+    return 1;
+  }
+
+  const before = verOf();
+  if (checkOnly) {
+    process.stderr.write(p.cyan(`an update is available.`) + p.dim(`  current ${before} (${local.slice(0, 7)}) → remote ${remote.slice(0, 7)}\n`));
+    process.stderr.write(p.dim("  run `slivr upgrade` to apply.\n"));
+    return 0;
+  }
+
+  // refuse to clobber local edits — a hard reset would lose them
+  let dirty = "";
+  try { dirty = git("status", "--porcelain"); } catch {}
+  if (dirty) {
+    process.stderr.write(p.yellow("refusing to upgrade: the install directory has local changes.\n"));
+    process.stderr.write(p.dim(`  ${ROOT}\n  commit/stash them, or re-clone, then retry.\n`));
+    return 1;
+  }
+
+  try { git("reset", "--quiet", "--hard", remote); }
+  catch (e) { process.stderr.write(p.yellow(`upgrade failed: ${String(e.message || e).split("\n")[0]}\n`)); return 1; }
+
+  // verify the new checkout actually runs
+  try { execFileSync("node", [path.join(ROOT, "bin", "slivr.mjs"), "--version"], { stdio: "ignore" }); }
+  catch { process.stderr.write(p.yellow("upgraded, but the new version failed its --version check. Consider re-installing.\n")); return 1; }
+
+  const after = verOf();
+  process.stderr.write(p.green(`upgraded slivr ${before === after ? after : `${before} → ${after}`}`) + p.dim(`  (${local.slice(0, 7)} → ${remote.slice(0, 7)})\n`));
+  return 0;
+}
+
 async function runMcpCommand(args, config, p) {
   const sub = args[0];
 
@@ -342,6 +416,10 @@ async function main() {
     process.stdout.write(p.gray(`  local: ${paths.local}${fs.existsSync(paths.local) ? "" : " (none)"}\n`));
     process.stdout.write(p.gray(`  home:  ${paths.home}${fs.existsSync(paths.home) ? "" : " (none)"}\n`));
     return 0;
+  }
+
+  if (subcommand === "upgrade" || subcommand === "update") {
+    return runUpgrade(positional.slice(1), p);
   }
 
   if (subcommand === "mcp") {

@@ -24,6 +24,11 @@ console.log("\n1) CLI basics");
 { const r = run(["--version"]); ok(r.status === 0 && /slivr/.test(r.stdout), "--version prints slivr"); }
 { const r = run(["--help"]); ok(/skills/.test(r.stdout) && /schedule/.test(r.stdout) && /mcp/.test(r.stdout), "--help lists skills/schedule/mcp"); }
 { const r = run(["config"]); ok(/model/.test(r.stdout), "config prints resolved config"); }
+{ const r = run(["--help"]); ok(/upgrade/.test(r.stdout), "--help lists upgrade"); }
+// upgrade --check is read-only (never resets the tree). It either reports up-to-date / an available
+// update (git checkout, network up), or refuses cleanly when not a git checkout / offline.
+{ const r = run(["upgrade", "--check"]); const o = r.stdout + r.stderr;
+  ok(/up to date|update is available|not a git checkout|could not reach/.test(o), "upgrade --check runs read-only"); }
 
 // 2. skills (deterministic): list the shipped skills
 console.log("\n2) skills");

@@ -36,6 +36,17 @@ npx github:dhyabi2/slivr --help
 git clone https://github.com/dhyabi2/slivr && cd slivr && npm link
 ```
 
+**Upgrading.** If you installed via the one-liner (or a clone), update in place:
+
+```bash
+slivr upgrade            # fast-forward the install to the latest release
+slivr upgrade --check    # just tell me if a newer version exists (no changes)
+```
+
+It only moves forward, refuses to clobber a dirty or locally-ahead checkout, and verifies the new
+version runs before declaring success. Installed via `npx`? It always pulls the latest, so there's
+nothing to upgrade.
+
 ## How Slivr compares
 
 A high-level snapshot of terminal-first coding agents (mid-2026 — check each tool's docs for the
@@ -106,6 +117,7 @@ slivr skills                list skills    ·   slivr skill <name> [args]   run 
 slivr bg "<task>" [dir]     detached background run (POSIX)  ·  jobs / logs <id>
 slivr schedule "<task>" --in 30m|--at <ISO>|--cron "<expr>"   ·  schedule list / clear
 slivr scheduler [--daemon|status|stop] [--every <sec>]   run/manage the schedule poller
+slivr upgrade [--check]     update the install to the latest version (forward-only, dirty-safe)
 flags: --model <id>  --approval <auto|edits|all>  --auto  --plan  --dir <path>  --max-steps <n>
        --baseline (one-shot full-rewrite harness, for the benchmark)  --help  --version
 ```
