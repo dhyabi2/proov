@@ -399,7 +399,10 @@ console.log("== 14. multimodal message-block construction (no LLM) ==");
   const png1x1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC", "base64");
   fs.writeFileSync(path.join(tmp, "px.png"), png1x1);
   fs.writeFileSync(path.join(tmp, "doc.pdf"), "%PDF-1.4\n%fake\n");
-  const t = new Tools(tmp);
+  // view_pdf's PRIMARY (multimodal) path requires a key; with NO key it falls back to local
+  // extraction. Pass a stub key so this block exercises the multimodal-marker construction (the
+  // local-fallback path is covered separately in section 17).
+  const t = new Tools(tmp, { apiKey: "test-stub-key" });
 
   const vi = t.view_image({ path: "px.png" });
   ok("view_image ok + carries multimodal marker", vi.ok && vi.multimodal && vi.multimodal.kind === "image" && vi.multimodal.dataUrl.startsWith("data:image/png;base64,"), JSON.stringify(vi).slice(0, 80));
@@ -530,6 +533,224 @@ console.log("== 16. jobs + schedule store + duration parsing (no LLM) ==");
     process.env.HOME = realHome;
     fs.rmSync(fakeHome, { recursive: true, force: true });
   }
+}
+
+console.log("== 17. PDF local-extraction fallback (no LLM, no real binary) ==");
+{
+  const { classifyPdfText, localPdfText, whichPdfTool } = await import("./src/pdftext.mjs");
+
+  // classification of extractor output (PURE)
+  ok("classify real text -> ok+text", (() => { const r = classifyPdfText("This is real extractable PDF text here."); return r.ok && /real extractable/.test(r.text) && r.chars > 0; })());
+  ok("classify empty -> EMPTY + scanned note", (() => { const r = classifyPdfText(""); return !r.ok && r.reason === "EMPTY" && /scanned/.test(r.note) && /OCR not supported/.test(r.note); })());
+  ok("classify whitespace-only -> EMPTY", (() => { const r = classifyPdfText("  \n\f\t  "); return !r.ok && r.reason === "EMPTY"; })());
+  ok("classify near-empty -> SCANNED", (() => { const r = classifyPdfText("a b"); return !r.ok && r.reason === "SCANNED" && /OCR not supported/.test(r.note); })());
+  ok("classify clips oversized text", (() => { const big = "x".repeat(50000); const r = classifyPdfText(big, { max: 1000 }); return r.ok && r.text.length < 1100 && /truncated/.test(r.text); })());
+
+  // localPdfText with an INJECTED runner (no spawn): success, scanned, no-tool, exec-error.
+  const fakeWhich = () => "pdftotext";
+  const okRun = () => "Extracted document text that is clearly real and long enough to pass.";
+  ok("localPdfText extracts via injected runner", (() => { const r = localPdfText("/x.pdf", { which: fakeWhich, run: okRun }); return r.ok && /Extracted document/.test(r.text) && r.tool === "pdftotext"; })());
+  const blankRun = () => "   ";
+  ok("localPdfText flags scanned/empty pdf", (() => { const r = localPdfText("/x.pdf", { which: fakeWhich, run: blankRun }); return !r.ok && r.reason === "EMPTY" && /OCR not supported/.test(r.note); })());
+  ok("localPdfText NO_TOOL when no extractor", (() => { const r = localPdfText("/x.pdf", { which: () => null }); return !r.ok && r.reason === "NO_TOOL"; })());
+  const throwRun = () => { throw new Error("boom"); };
+  ok("localPdfText EXEC on binary failure", (() => { const r = localPdfText("/x.pdf", { which: fakeWhich, run: throwRun }); return !r.ok && r.reason === "EXEC" && /failed/.test(r.note); })());
+
+  // view_pdf wiring: NO key -> local path (text result, no multimodal); explicit local:true forces it.
+  const t = new Tools(tmp); // no apiKey in opts
+  delete process.env.OPENROUTER_API_KEY; // ensure noKey branch is exercised deterministically
+  fs.writeFileSync(path.join(tmp, "blank.pdf"), "%PDF-1.4\n%empty\n");
+  // With a real (but text-less) pdf and no key: returns a clean failure, never a multimodal marker.
+  const vp = t.view_pdf({ path: "blank.pdf" });
+  ok("view_pdf no-key path never returns multimodal", !vp.multimodal);
+  ok("whichPdfTool returns a string-or-null", (() => { const w = whichPdfTool(); return w === null || typeof w === "string"; })());
+}
+
+console.log("== 18. scheduler service: pidfile + group/prune (no real daemon) ==");
+{
+  const sched = await import("./src/scheduler.mjs");
+  const jobs = await import("./src/jobs.mjs");
+
+  // run pidfile + prune tests under a temp HOME so we don't touch the user's ~/.cc-alt
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ccsched-"));
+  const realHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  try {
+    // pidAlive: current process is alive; an absurd pid is not.
+    ok("pidAlive true for self", sched.pidAlive(process.pid) === true);
+    ok("pidAlive false for bogus pid", sched.pidAlive(2 ** 30) === false);
+    ok("pidAlive false for null", sched.pidAlive(null) === false);
+
+    // status with no pidfile -> not running
+    const s0 = sched.schedulerStatus();
+    ok("status: no pidfile -> not running", s0.running === false && s0.pid === null);
+
+    // claim the pidfile (writes THIS pid), status reflects running
+    sched.claimSchedulerPidfile();
+    const s1 = sched.schedulerStatus();
+    ok("claimSchedulerPidfile writes our pid + status running", s1.pid === process.pid && s1.running === true);
+
+    // STUB the daemon start by writing a pidfile for a dead pid, then status should be not-running
+    fs.writeFileSync(sched.schedulerPidPath(), "999999999\n");
+    const s2 = sched.schedulerStatus();
+    ok("status: dead pid -> not running (stale)", s2.running === false && s2.pid === 999999999);
+
+    // startSchedulerDaemon refuses when one is already running (claim our own live pid first)
+    fs.writeFileSync(sched.schedulerPidPath(), String(process.pid) + "\n");
+    const start = sched.startSchedulerDaemon({});
+    ok("startSchedulerDaemon refuses when already running", !start.ok && start.error === "ALREADY_RUNNING");
+
+    // stopSchedulerDaemon removes the pidfile (we point it at a dead pid so no real kill happens)
+    fs.writeFileSync(sched.schedulerPidPath(), "999999999\n");
+    const stop = sched.stopSchedulerDaemon();
+    ok("stopSchedulerDaemon clears the pidfile", stop.ok && !fs.existsSync(sched.schedulerPidPath()));
+    const stop2 = sched.stopSchedulerDaemon();
+    ok("stopSchedulerDaemon NOT_RUNNING when no pidfile", !stop2.ok && stop2.error === "NOT_RUNNING");
+
+    // groupSchedule + pruneSchedule + clearSchedule
+    const list = [
+      { id: "a", status: "scheduled", kind: "cron" },
+      { id: "b", status: "done", kind: "once" },
+      { id: "c", status: "scheduled", kind: "once" },
+      { id: "d", status: "done", kind: "once" },
+    ];
+    const g = jobs.groupSchedule(list);
+    ok("groupSchedule splits active vs done", g.active.length === 2 && g.done.length === 2 && g.active.every(j => j.status !== "done"));
+    const pr = jobs.pruneSchedule(list);
+    ok("pruneSchedule drops done, keeps active", pr.kept.length === 2 && pr.removed.length === 2 && pr.kept.every(j => j.status !== "done"));
+    jobs.writeSchedule(list);
+    const cleared = jobs.clearSchedule();
+    ok("clearSchedule prunes done from disk", cleared.removed === 2 && cleared.remaining === 2 && jobs.readSchedule().length === 2);
+
+    // win32 bg guard: spawnBackground must refuse with a clear POSIX message (platform stubbed).
+    const realPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    let winErr = "";
+    try { sched.spawnBackground("t", tmp); } catch (e) { winErr = e.message; }
+    Object.defineProperty(process, "platform", realPlatform);
+    ok("spawnBackground refuses on win32 with POSIX message", /POSIX shell/.test(winErr) && /win32/.test(winErr));
+    // and startSchedulerDaemon refuses on win32 too
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const winDaemon = sched.startSchedulerDaemon({});
+    Object.defineProperty(process, "platform", realPlatform);
+    ok("startSchedulerDaemon refuses on win32", !winDaemon.ok && /POSIX shell/.test(winDaemon.error));
+  } finally {
+    process.env.HOME = realHome;
+    fs.rmSync(fakeHome, { recursive: true, force: true });
+  }
+}
+
+console.log("== 19. robustness: malformed model output + oversized clipping (no LLM) ==");
+{
+  const t = new Tools(tmp);
+  fs.writeFileSync(path.join(tmp, "r.js"), "export const Q = 1;\n");
+
+  // a) non-JSON, then JSON-with-missing-tool, then unknown-tool, then a valid edit, then done.
+  //    The loop must feed corrective messages (not crash) and still reach done.
+  const huge = "Z".repeat(20000);
+  const toolMap = {
+    read_file: (a) => t.read_file(a),
+    edit_file: (a) => t.edit_file(a),
+    big: () => ({ ok: true, blob: huge }),                 // returns an oversized result
+    boom: () => { throw new Error("tool exploded"); },     // throws -> loop must catch
+  };
+  const script = [
+    "I am just prose, not a tool call at all.",            // non-JSON -> corrective
+    JSON.stringify({ args: { path: "r.js" } }),            // missing "tool" -> corrective
+    JSON.stringify({ tool: "does_not_exist", args: {} }),  // unknown tool -> corrective
+    JSON.stringify({ tool: "boom", args: {} }),            // throws -> caught as {ok:false}
+    JSON.stringify({ tool: "big", args: {} }),             // oversized result -> clipped
+    JSON.stringify({ tool: "edit_file", args: { path: "r.js", anchor: "export const Q = 1;", replacement: "export const Q = 2;" } }),
+    JSON.stringify({ tool: "done", args: { summary: "handled all the malformed cases" } }),
+  ];
+  let i = 0;
+  const fakeProvider = {
+    chat: async () => ({ text: script[i++] ?? '{"tool":"done","args":{}}', usage: {}, raw: {} }),
+    totals: () => ({ model: "stub", calls: i, promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: 0 }),
+  };
+  const res = await runLoop({ provider: fakeProvider, tools: t, toolMap, systemPrompt: "stub", task: "x", maxSteps: 12 });
+  ok("loop survives non-JSON / missing-tool / unknown-tool / throwing-tool", res.done === true);
+  ok("loop reached done after malformed sequence", /malformed cases/.test(res.summary));
+  ok("loop applied the valid edit at the end", t.read_file({ path: "r.js" }).content.includes("Q = 2"));
+  ok("trace records a badCall (non-JSON)", res.trace.some(s => s.badCall));
+  ok("trace records an unknownTool", res.trace.some(s => s.unknownTool === "does_not_exist"));
+  // oversized result was clipped before being fed back (so context can't blow up)
+  const bigMsg = res.messages.find(m => typeof m.content === "string" && m.content.startsWith("RESULT (big)"));
+  ok("oversized tool result is clipped in the thread", !!bigMsg && /truncated \d+ chars/.test(bigMsg.content) && bigMsg.content.length < huge.length);
+  // a throwing tool surfaced as a clean {ok:false} error result (no crash)
+  const boomMsg = res.messages.find(m => typeof m.content === "string" && m.content.startsWith("RESULT (boom)"));
+  ok("throwing tool surfaced as ok:false error", !!boomMsg && /tool exploded/.test(boomMsg.content));
+
+  // b) provider that always fails -> loop ends cleanly with a PROVIDER_ERROR trace (no throw escapes).
+  const failProvider = {
+    chat: async () => { throw new Error("network down"); },
+    totals: () => ({ model: "stub", calls: 1, promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: 0 }),
+  };
+  let threw = false, r2;
+  try { r2 = await runLoop({ provider: failProvider, tools: t, toolMap, systemPrompt: "s", task: "x", maxSteps: 3 }); }
+  catch { threw = true; }
+  ok("provider failure does NOT throw out of the loop", threw === false && r2 && r2.done === false);
+  ok("provider failure recorded in trace", r2.trace.some(s => s.error === "PROVIDER_ERROR" && /network down/.test(s.detail || "")));
+}
+
+console.log("== 20. robustness: malformed config/skill/job never crash + web_search usage shape ==");
+{
+  // malformed .cc-alt.json -> loadConfig falls back to defaults, no throw
+  const { loadConfig } = await import("./src/config.mjs");
+  const badProj = fs.mkdtempSync(path.join(os.tmpdir(), "ccbad-"));
+  fs.writeFileSync(path.join(badProj, ".cc-alt.json"), "{ this is : not valid json ,,, }");
+  let cfgThrew = false, cfg;
+  try { cfg = loadConfig({ cwd: badProj, env: {} }); } catch { cfgThrew = true; }
+  ok("malformed .cc-alt.json does not crash loadConfig", !cfgThrew && cfg && cfg.config.model);
+
+  // malformed skill file -> discoverSkills skips it, keeps the good ones
+  const { discoverSkills } = await import("./src/skills.mjs");
+  fs.mkdirSync(path.join(badProj, ".cc-alt", "skills"), { recursive: true });
+  fs.writeFileSync(path.join(badProj, ".cc-alt", "skills", "good.md"), "# Good\n<!-- description: fine -->\nDo $ARGS");
+  // a directory named like a skill file would make readFileSync throw EISDIR -> must be skipped
+  fs.mkdirSync(path.join(badProj, ".cc-alt", "skills", "broken.md"));
+  let skillThrew = false, skills;
+  try { skills = discoverSkills(badProj); } catch { skillThrew = true; }
+  ok("malformed skill entry skipped, good skill kept", !skillThrew && skills.has("good") && !skills.has("broken"));
+
+  // malformed job json -> listJobs / readJob skip it, no throw
+  const jobs = await import("./src/jobs.mjs");
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ccjobhome-"));
+  const realHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  try {
+    fs.mkdirSync(jobs.jobsDir(), { recursive: true });
+    fs.writeFileSync(path.join(jobs.jobsDir(), "bad.json"), "{not json");
+    jobs.writeJob({ id: "goodjob", task: "t", dir: ".", status: "queued", createdAt: Date.now() });
+    let jobThrew = false, list;
+    try { list = jobs.listJobs(); } catch { jobThrew = true; }
+    ok("malformed job json skipped, good job listed", !jobThrew && list.some(j => j.id === "goodjob") && !list.some(j => j.id === "bad"));
+    ok("readJob on malformed id returns null", jobs.readJob("bad") === null);
+  } finally {
+    process.env.HOME = realHome;
+    fs.rmSync(fakeHome, { recursive: true, force: true });
+  }
+  fs.rmSync(badProj, { recursive: true, force: true });
+
+  // web_search usage surfacing: stub fetch so no network; verify usage is returned AND folded back.
+  const { Tools: ToolsCls } = await import("./src/tools.mjs");
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: "answer with https://x.com" } }], usage: { prompt_tokens: 120, completion_tokens: 40 } }) });
+  let folded = null;
+  try {
+    const ws = new ToolsCls(tmp, { apiKey: "k", model: "google/gemini-2.5-flash", onExternalUsage: (u) => { folded = u; } });
+    const r = await ws.web_search({ query: "hi" });
+    ok("web_search returns usage tokens", r.ok && r.usage && r.usage.totalTokens === 160 && r.usage.cost > 0);
+    ok("web_search note surfaces the separate cost", /billed separately/.test(r.note));
+    ok("web_search folds usage back via onExternalUsage", folded && folded.totalTokens === 160);
+  } finally { globalThis.fetch = realFetch; }
+
+  // provider.recordExternalUsage folds into session totals
+  const { Provider } = await import("./src/provider.mjs");
+  const prov = new Provider({ apiKey: "k", model: "google/gemini-2.5-flash" });
+  prov.recordExternalUsage({ promptTokens: 100, completionTokens: 50, cost: 0.001 });
+  const tot = prov.totals();
+  ok("recordExternalUsage updates session totals", tot.totalTokens === 150 && tot.cost >= 0.001);
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });

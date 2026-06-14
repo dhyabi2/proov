@@ -120,6 +120,16 @@ export class Provider {
     throw lastErr || new Error("chat failed");
   }
 
+  // Fold in token usage from a SEPARATE OpenRouter call made outside chat() (e.g. the web_search
+  // tool's own request) so session totals + cost stay honest. usage = { promptTokens, completionTokens, cost }.
+  recordExternalUsage(usage = {}) {
+    const pt = usage.promptTokens || 0, ct = usage.completionTokens || 0;
+    this.promptTokens += pt;
+    this.completionTokens += ct;
+    this.cost += (typeof usage.cost === "number" ? usage.cost : costUSD(this.model, pt, ct));
+    this.log.push({ promptTokens: pt, completionTokens: ct, cost: usage.cost, external: true });
+  }
+
   totals() {
     return {
       model: this.model,

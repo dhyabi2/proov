@@ -123,6 +123,35 @@ export function makeScheduled({ task, dir, in: inDur, at, cron } = {}) {
   return { ok: false, error: "NO_TIMING", hint: "pass --in <dur>, --at <ISO>, or --cron <expr>" };
 }
 
+// Partition a schedule into { active, done } for grouped display. A job is "done" when its status
+// is "done" (a fired once-job, or a cron that reached the end of its window). PURE — no FS.
+export function groupSchedule(schedule) {
+  const active = [], done = [];
+  for (const j of (schedule || [])) {
+    if (j && j.status === "done") done.push(j);
+    else active.push(j);
+  }
+  return { active, done };
+}
+
+// Remove completed once-jobs (and any explicitly-done entries) from the schedule file, keeping
+// active/cron jobs. Returns { removed, remaining }. PURE given an array; clearSchedule() wires FS.
+export function pruneSchedule(schedule) {
+  const keep = [], removed = [];
+  for (const j of (schedule || [])) {
+    if (j && j.status === "done") removed.push(j);
+    else keep.push(j);
+  }
+  return { kept: keep, removed };
+}
+
+export function clearSchedule() {
+  const cur = readSchedule();
+  const { kept, removed } = pruneSchedule(cur);
+  if (removed.length) writeSchedule(kept);
+  return { removed: removed.length, remaining: kept.length };
+}
+
 // Which scheduled jobs are due at time `now`? (dueAt <= now and not already running)
 export function dueJobs(schedule, now = Date.now()) {
   return (schedule || []).filter(j => j && j.status !== "running" && typeof j.dueAt === "number" && j.dueAt <= now);

@@ -22,8 +22,8 @@ import { renderDiff, diffStat } from "../src/diff.mjs";
 import { isDestructive, needsApproval } from "../src/safety.mjs";
 import { connectAll, closeAll } from "../src/mcp.mjs";
 import { listSkills, renderSkill } from "../src/skills.mjs";
-import { spawnBackground, runBackgroundJob, runScheduler } from "../src/scheduler.mjs";
-import { listJobs, readJob, logPath, makeScheduled, addScheduled, readSchedule } from "../src/jobs.mjs";
+import { spawnBackground, runBackgroundJob, runScheduler, startSchedulerDaemon, stopSchedulerDaemon, schedulerStatus } from "../src/scheduler.mjs";
+import { listJobs, readJob, logPath, makeScheduled, addScheduled, readSchedule, clearSchedule, groupSchedule } from "../src/jobs.mjs";
 
 const VERSION = (() => {
   try {
@@ -54,6 +54,8 @@ function parseArgs(argv) {
     else if (a === "--cron") flags.cron = argv[++i];
     else if (a === "--every") flags.every = argv[++i];
     else if (a === "--watch") flags.watch = true;
+    else if (a === "--daemon") flags.daemon = true;
+    else if (a === "--__daemon-child") flags.daemonChild = true;
     else if (a === "--__bg-run") flags.bgRun = argv[++i];
     else if (a.startsWith("--model=")) flags.model = a.slice(8);
     else if (a.startsWith("--approval=")) flags.approval = a.slice(11);
@@ -72,12 +74,18 @@ USAGE
   cc-alt config                print the resolved configuration (and where each value came from)
   cc-alt skills                list available skills (.cc-alt/skills/*.md, ~/.cc-alt/skills/*.md)
   cc-alt skill <name> [args]   run a skill one-shot (a reusable prompt template)
-  cc-alt bg "<task>" [dir]     run a task in a DETACHED background process
+  cc-alt mcp list              connect configured MCP servers and print their tools
+  cc-alt mcp add <name> -- <cmd...>   add an MCP server to ./.cc-alt.json
+  cc-alt bg "<task>" [dir]     run a task in a DETACHED background process (POSIX only)
   cc-alt jobs [--watch]        list background jobs (id, status, task)
   cc-alt logs <id>             print a background job's log
   cc-alt schedule "<task>" --in 30m|--at <ISO>|--cron "<expr>"   schedule a task
-  cc-alt schedule list         list scheduled jobs
+  cc-alt schedule list         list scheduled jobs (grouped: active vs done)
+  cc-alt schedule clear        prune completed once-jobs from the schedule
   cc-alt scheduler             run the foreground poller that fires due scheduled jobs
+  cc-alt scheduler --daemon    start the poller DETACHED (pidfile ~/.cc-alt/scheduler.pid)
+  cc-alt scheduler status      report whether the daemon is running
+  cc-alt scheduler stop        stop the detached daemon
   cc-alt --init                write a starter ./.cc-alt.json
 
 OPTIONS
@@ -87,6 +95,9 @@ OPTIONS
   --plan                       plan-mode: agent must produce + get approval for a numbered plan before editing
   --dir <path>                 working directory (default: cwd or the 2nd positional arg)
   --max-steps <n>              cap tool-calls per turn
+  --in/--at/--cron <v>         scheduling timing for "cc-alt schedule"
+  --every <secs>               scheduler poll interval (default 30)
+  --watch                      live-refresh "cc-alt jobs"
   --baseline                   one-shot using the full-rewrite harness (for the cost benchmark)
   -h, --help                   show this help
   -v, --version                show version
@@ -111,7 +122,9 @@ async function runOneShot(task, dir, config, palette, { auto, plan }) {
     planMode: !!plan,
   });
   if (!session.provider.hasKey()) {
-    process.stderr.write(p.yellow("warning: no API key (set OPENROUTER_API_KEY or apiKey in .cc-alt.json)\n"));
+    process.stderr.write(p.yellow("no API key found — the agent cannot call the model.\n"));
+    process.stderr.write(p.dim("  fix: export OPENROUTER_API_KEY=sk-or-...   (or put \"apiKey\" in .cc-alt.json, or OPENROUTER_API_KEY in a .env)\n"));
+    process.stderr.write(p.dim("  get one at https://openrouter.ai/keys\n"));
   }
   // Connect any configured MCP servers; their tools become callable as mcp__<server>__<tool>.
   if (config.mcpServers) {
@@ -394,15 +407,24 @@ async function main() {
 
   // ---- scheduled jobs ---------------------------------------------------------
   if (subcommand === "schedule") {
-    // `cc-alt schedule list` shows scheduled jobs; otherwise schedule a new one.
+    // `cc-alt schedule clear` prunes completed once-jobs.
+    if (positional[1] === "clear") {
+      const r = clearSchedule();
+      process.stdout.write(p.green(`pruned ${r.removed} completed job(s)`) + p.dim(` — ${r.remaining} remaining\n`));
+      return 0;
+    }
+    // `cc-alt schedule list` shows scheduled jobs, grouped active vs done; otherwise schedule a new one.
     if (positional[1] === "list") {
       const sched = readSchedule();
       if (!sched.length) { process.stdout.write(p.dim("no scheduled jobs. add one: cc-alt schedule \"<task>\" --in 30m\n")); return 0; }
-      process.stdout.write(p.bold("scheduled") + p.dim("  (run the poller: cc-alt scheduler)") + "\n");
-      for (const j of sched) {
+      const { active, done } = groupSchedule(sched);
+      const row = (j) => {
         const when = j.status === "done" ? "(done)" : typeof j.dueAt === "number" ? new Date(j.dueAt).toISOString() : "(done)";
-        process.stdout.write(`  ${p.gray(j.id)}  ${p.cyan((j.spec || j.kind || "?").padEnd(16))} next:${p.dim(when)}  ${String(j.task).replace(/\s+/g, " ").slice(0, 48)}\n`);
-      }
+        return `  ${p.gray(j.id)}  ${p.cyan((j.spec || j.kind || "?").padEnd(16))} next:${p.dim(when)}  ${String(j.task).replace(/\s+/g, " ").slice(0, 48)}\n`;
+      };
+      process.stdout.write(p.bold("scheduled") + p.dim("  (run the poller: cc-alt scheduler --daemon)") + "\n");
+      if (active.length) { process.stdout.write(p.bold("\n  active\n")); for (const j of active) process.stdout.write(row(j)); }
+      if (done.length) { process.stdout.write(p.dim("\n  done") + p.dim("  (prune: cc-alt schedule clear)") + "\n"); for (const j of done) process.stdout.write(row(j)); }
       return 0;
     }
     const task = positional[1];
@@ -417,7 +439,29 @@ async function main() {
   }
   if (subcommand === "scheduler") {
     const intervalMs = flags.every ? (parseInt(flags.every, 10) * 1000 || 30000) : 30000;
-    await runScheduler({ intervalMs });   // foreground; never returns until killed
+    const action = positional[1];
+    if (action === "stop") {
+      const r = stopSchedulerDaemon();
+      if (!r.ok) { process.stdout.write(p.dim(`scheduler not running (no pidfile)\n`)); return 0; }
+      process.stdout.write(p.green(`stopped scheduler`) + p.dim(` (pid ${r.pid}${r.wasRunning ? "" : ", was already gone"})\n`));
+      return 0;
+    }
+    if (action === "status") {
+      const s = schedulerStatus();
+      if (s.running) process.stdout.write(p.green(`scheduler running`) + p.dim(` (pid ${s.pid})\n`));
+      else process.stdout.write(p.yellow("scheduler not running") + p.dim(s.pid ? ` (stale pidfile for pid ${s.pid})\n` : "\n"));
+      return s.running ? 0 : 1;
+    }
+    if (flags.daemon) {
+      const r = startSchedulerDaemon({ intervalMs });
+      if (!r.ok) {
+        if (r.error === "ALREADY_RUNNING") { process.stderr.write(p.yellow(`scheduler already running (pid ${r.pid})\n`)); return 1; }
+        process.stderr.write(p.red(`could not start scheduler daemon: ${r.error}\n`)); return 1;
+      }
+      process.stdout.write(p.green(`scheduler daemon started`) + p.dim(` (pid ${r.pid}) — stop: cc-alt scheduler stop · status: cc-alt scheduler status\n`));
+      return 0;
+    }
+    await runScheduler({ intervalMs, daemon: !!flags.daemonChild });   // foreground; never returns until killed
     return 0;
   }
 

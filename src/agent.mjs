@@ -78,7 +78,8 @@ the checklist updated → call done. Keep going until the task is verifiably com
 
 export function makeAgent(workdir, opts = {}) {
   const provider = new Provider(opts);
-  const tools = new Tools(workdir, opts);
+  // fold web_search's separate OpenRouter spend into this provider's session accounting.
+  const tools = new Tools(workdir, { ...opts, onExternalUsage: (u) => provider.recordExternalUsage(u) });
   const toolMap = {
     read_file: (a) => tools.read_file(a),
     list_dir: (a) => tools.list_dir(a),
@@ -175,7 +176,8 @@ export class Session {
     this.workdir = path.resolve(workdir);
     this.opts = opts;
     this.provider = new Provider(opts);
-    this.tools = new Tools(workdir, opts);
+    // fold web_search's separate OpenRouter spend into the session provider's accounting.
+    this.tools = new Tools(workdir, { ...opts, onExternalUsage: (u) => this.provider.recordExternalUsage(u) });
     this.messages = null; // seeded on first run; persists across turns
     this.maxSteps = opts.maxSteps ?? 16;
     // diff capture: edit tools record { path, before, after } on the session for the UI to read.

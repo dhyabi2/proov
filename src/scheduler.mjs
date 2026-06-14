@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import {
   jobsDir, logPath, newJobRecord, writeJob, updateJob,
-  readSchedule, writeSchedule, dueJobs, nextCron,
+  readSchedule, writeSchedule, dueJobs, nextCron, ccaltHome,
 } from "./jobs.mjs";
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "cc-alt.mjs");
@@ -24,16 +24,29 @@ const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin",
 // Spawn a detached background job. Returns the job record (status starts "queued"; the child flips
 // it to running/done/failed). The detached child outlives this process.
 export function spawnBackground(task, dir) {
+  // The detached-spawn model (unref + stdio ignore) is POSIX-shaped. On win32 the child does not
+  // reliably outlive the parent the same way, so fail with a clear, actionable message instead of
+  // leaving a half-started ghost job. macOS/Linux are unaffected.
+  if (process.platform === "win32") {
+    throw new Error("background tasks need a POSIX shell on this platform (win32 not supported); run the task in the foreground or under WSL.");
+  }
   fs.mkdirSync(jobsDir(), { recursive: true });
   const rec = newJobRecord({ task, dir, kind: "bg" });
   writeJob(rec);
   // The child is a thin runner mode of the CLI so it can update the status record around the run.
-  const child = spawn(process.execPath, [BIN, "--__bg-run", rec.id], {
-    detached: true,
-    stdio: "ignore",            // the runner itself opens the log file for the inner one-shot
-    env: process.env,
-  });
-  child.unref();
+  let child;
+  try {
+    child = spawn(process.execPath, [BIN, "--__bg-run", rec.id], {
+      detached: true,
+      stdio: "ignore",            // the runner itself opens the log file for the inner one-shot
+      env: process.env,
+    });
+    child.unref();
+  } catch (e) {
+    // detached spawn unsupported / blocked on this platform — surface clearly, mark the record failed.
+    updateJob(rec.id, { status: "failed", endedAt: Date.now(), exitCode: 1, error: String(e?.message || e) });
+    throw new Error(`background tasks need a POSIX shell on this platform: ${String(e?.message || e)}`);
+  }
   return { ...rec, pid: child.pid };
 }
 
@@ -62,9 +75,17 @@ export async function runBackgroundJob(id, { loadConfig, runOneShotInProcess }) 
 }
 
 // Foreground poller. Runs until the process is killed. Each tick: spawn due jobs, reschedule cron.
-export async function runScheduler({ intervalMs = 30000, onTick } = {}) {
-  process.stdout.write(`cc-alt scheduler: polling every ${Math.round(intervalMs / 1000)}s — file: ${path.join(os.homedir(), ".cc-alt", "schedule.json")}\n`);
-  process.stdout.write("(this is a simple foreground poller, not a system daemon — keep it running.)\n");
+// When daemon:true it claims the scheduler pidfile and clears it on SIGTERM/SIGINT for clean stop.
+export async function runScheduler({ intervalMs = 30000, onTick, daemon = false } = {}) {
+  if (daemon) {
+    claimSchedulerPidfile();
+    const cleanup = () => { try { fs.unlinkSync(schedulerPidPath()); } catch { /* gone */ } process.exit(0); };
+    process.on("SIGTERM", cleanup);
+    process.on("SIGINT", cleanup);
+  } else {
+    process.stdout.write(`cc-alt scheduler: polling every ${Math.round(intervalMs / 1000)}s — file: ${path.join(os.homedir(), ".cc-alt", "schedule.json")}\n`);
+    process.stdout.write("(this is a simple foreground poller, not a system daemon — run with --daemon to detach.)\n");
+  }
   // eslint-disable-next-line no-constant-condition
   while (true) {
     tickScheduler();
@@ -96,3 +117,60 @@ export function tickScheduler(now = Date.now(), spawn = spawnBackground) {
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// --- scheduler-as-a-service: detach a long-running poller, track it via a pidfile -----------------
+
+export function schedulerPidPath() { return path.join(ccaltHome(), "scheduler.pid"); }
+
+// Is a pid alive? signal 0 probes without sending. Returns false on ESRCH / bad pid.
+export function pidAlive(pid) {
+  if (!pid || !Number.isFinite(Number(pid))) return false;
+  try { process.kill(Number(pid), 0); return true; }
+  catch (e) { return e && e.code === "EPERM"; } // EPERM = exists but not ours; ESRCH = gone
+}
+
+// Read the scheduler pidfile -> { pid, running } (running reflects an actual live process).
+export function schedulerStatus() {
+  const pf = schedulerPidPath();
+  let pid = null;
+  try { pid = parseInt(fs.readFileSync(pf, "utf8").trim(), 10); } catch { return { running: false, pid: null, pidfile: pf }; }
+  if (!Number.isFinite(pid)) return { running: false, pid: null, pidfile: pf };
+  const running = pidAlive(pid);
+  return { running, pid, pidfile: pf };
+}
+
+// Start a DETACHED scheduler daemon (same shape as spawnBackground: detached + stdio ignore + unref)
+// and write its pid to the pidfile. Refuses if one is already running. Returns { ok, pid } / { ok:false }.
+export function startSchedulerDaemon({ intervalMs } = {}) {
+  if (process.platform === "win32") return { ok: false, error: "background tasks need a POSIX shell on this platform (win32 not supported)" };
+  const st = schedulerStatus();
+  if (st.running) return { ok: false, error: "ALREADY_RUNNING", pid: st.pid };
+  fs.mkdirSync(ccaltHome(), { recursive: true });
+  const args = [BIN, "scheduler", "--__daemon-child"];
+  if (intervalMs) args.push("--every", String(Math.round(intervalMs / 1000)));
+  let child;
+  try {
+    child = spawn(process.execPath, args, { detached: true, stdio: "ignore", env: process.env });
+    child.unref();
+  } catch (e) {
+    return { ok: false, error: `detached spawn failed: ${String(e?.message || e)}` };
+  }
+  try { fs.writeFileSync(schedulerPidPath(), String(child.pid) + "\n"); } catch { /* best-effort */ }
+  return { ok: true, pid: child.pid };
+}
+
+// Stop the daemon: read pidfile, kill it (SIGTERM), remove the pidfile. Returns { ok, pid } or reason.
+export function stopSchedulerDaemon() {
+  const st = schedulerStatus();
+  if (!st.pid) return { ok: false, error: "NOT_RUNNING" };
+  let killed = false;
+  if (st.running) { try { process.kill(st.pid, "SIGTERM"); killed = true; } catch { /* already gone */ } }
+  try { fs.unlinkSync(schedulerPidPath()); } catch { /* gone */ }
+  return { ok: true, pid: st.pid, killed, wasRunning: st.running };
+}
+
+// The detached daemon writes its OWN pid (the real child pid may differ from the recorded one if the
+// runtime re-execs). Call at daemon start so `status`/`stop` track the live process accurately.
+export function claimSchedulerPidfile() {
+  try { fs.mkdirSync(ccaltHome(), { recursive: true }); fs.writeFileSync(schedulerPidPath(), String(process.pid) + "\n"); } catch { /* ignore */ }
+}

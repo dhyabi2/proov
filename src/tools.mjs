@@ -12,6 +12,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { execSync, execFileSync } from "node:child_process";
 import { applyEdit } from "./seal.mjs";
+import { localPdfText } from "./pdftext.mjs";
+import { costUSD } from "./provider.mjs";
 
 export class Tools {
   constructor(workdir, opts = {}) {
@@ -273,34 +275,55 @@ export class Tools {
     return { ok: true, path: rel, multimodal: { kind: "image", path: rel, mime, dataUrl: `data:${mime};base64,${b64}` }, note: `image loaded (${ext}, ~${Math.round((bytes * 3) / 4)} bytes); shown to the model` };
   }
 
-  view_pdf({ path: rel } = {}) {
+  // view_pdf: PRIMARY path sends the PDF to the model via OpenRouter's file-parser plugin (so the
+  // model reads it directly). FALLBACK: pass { local:true } (or call when no OpenRouter key is set)
+  // to extract text LOCALLY via poppler's pdftotext / mutool and return it as a text result. If the
+  // PDF has no extractable text (scanned/image), we say so clearly instead of failing silently.
+  view_pdf({ path: rel, local = false } = {}) {
     if (!rel) return { ok: false, error: "NO_PATH", hint: "Pass path: rel/to/file.pdf" };
     let abs; try { abs = this._resolve(rel); } catch (e) { return { ok: false, error: e.message }; }
     if (!fs.existsSync(abs)) return { ok: false, error: "FILE_NOT_FOUND", path: rel };
     if (path.extname(abs).toLowerCase() !== ".pdf") return { ok: false, error: "NOT_A_PDF", path: rel, hint: "view_pdf expects a .pdf file" };
-    let b64; try { b64 = fs.readFileSync(abs).toString("base64"); } catch (e) { return { ok: false, error: String(e.message || e) }; }
     const name = path.basename(abs);
-    return { ok: true, path: rel, multimodal: { kind: "pdf", path: rel, filename: name, dataUrl: `data:application/pdf;base64,${b64}` }, note: `pdf loaded (${name}); sent to the model via OpenRouter's file-parser plugin` };
+    // No OpenRouter key OR explicit local:true -> local extraction is the only sensible path.
+    const noKey = !(this.opts.apiKey || process.env.OPENROUTER_API_KEY);
+    if (local || noKey) {
+      const r = localPdfText(abs);
+      if (r.ok) return { ok: true, path: rel, text: r.text, chars: r.chars, source: `local:${r.tool}`, note: `pdf text extracted locally via ${r.tool} (${r.chars} chars)` };
+      // NO_TOOL with a key available -> fall through to the multimodal path; otherwise surface clearly.
+      if (r.reason === "NO_TOOL" && !noKey && !local) { /* fall through to multimodal */ }
+      else return { ok: false, error: r.reason, path: rel, note: r.note };
+    }
+    let b64; try { b64 = fs.readFileSync(abs).toString("base64"); } catch (e) { return { ok: false, error: String(e.message || e) }; }
+    return { ok: true, path: rel, multimodal: { kind: "pdf", path: rel, filename: name, dataUrl: `data:application/pdf;base64,${b64}` }, note: `pdf loaded (${name}); sent to the model via OpenRouter's file-parser plugin (pass local:true to extract text locally instead)` };
   }
 
-  // web_search: grounded web search via OpenRouter's `web` plugin (uses the same key; counts tokens
-  // against your OpenRouter account, separate from the agent's own accounting).
+  // web_search: grounded web search via OpenRouter's `web` plugin. This makes its OWN OpenRouter
+  // call (separate from the agent loop). Because it's a separate call, its tokens are NOT counted in
+  // the session totals automatically — so we SURFACE the usage in the result (tokens + est. cost) and,
+  // if the host wired one in via opts.onExternalUsage, report it back so cost isn't silently hidden.
   async web_search({ query, max = 5 }) {
     const key = this.opts.apiKey || process.env.OPENROUTER_API_KEY;
     if (!key) return { ok: false, error: "NO_KEY", hint: "Set OPENROUTER_API_KEY to enable web search." };
     if (!query) return { ok: false, error: "NO_QUERY" };
+    const model = this.opts.model || "google/gemini-2.5-flash";
     try {
       const r = await fetch((this.opts.baseUrl || "https://openrouter.ai/api/v1") + "/chat/completions", {
         method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(30000),
         body: JSON.stringify({
-          model: this.opts.model || "google/gemini-2.5-flash",
+          model,
           plugins: [{ id: "web", max_results: Math.max(1, Math.min(10, max | 0 || 5)) }],
           messages: [{ role: "user", content: `Search the web and answer concisely WITH source URLs: ${query}` }],
         }),
       });
       if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
       const j = await r.json();
-      return { ok: true, query, answer: (j.choices?.[0]?.message?.content || "").slice(0, 4000) };
+      const u = j.usage || {};
+      const pt = u.prompt_tokens ?? 0, ct = u.completion_tokens ?? 0;
+      const usage = { promptTokens: pt, completionTokens: ct, totalTokens: pt + ct, cost: +costUSD(model, pt, ct).toFixed(6) };
+      // give the host a chance to fold this external spend into session accounting.
+      if (typeof this.opts.onExternalUsage === "function") { try { this.opts.onExternalUsage(usage); } catch { /* ignore */ } }
+      return { ok: true, query, answer: (j.choices?.[0]?.message?.content || "").slice(0, 4000), usage, note: `web_search billed separately: ${usage.totalTokens} tok ≈ $${usage.cost.toFixed(4)}` };
     } catch (e) { return { ok: false, error: String(e.message || e) }; }
   }
 }
