@@ -14,8 +14,9 @@ import { execSync, execFileSync } from "node:child_process";
 import { applyEdit } from "./seal.mjs";
 
 export class Tools {
-  constructor(workdir) {
+  constructor(workdir, opts = {}) {
     this.workdir = path.resolve(workdir);
+    this.opts = opts; // { apiKey, model, baseUrl } — used by the web tools
   }
 
   _resolve(rel) {
@@ -163,5 +164,63 @@ export class Tools {
     const add = this._git(["add", "-A"]); if (!add.ok) return add;
     const r = this._git(["commit", "-m", String(message).slice(0, 500)]);   // args array -> no shell injection; never pushes
     return r.ok ? { ok: true, committed: r.out } : r;
+  }
+
+  // --- gap-closers: file discovery + web access ---
+
+  // glob: fast filename matching by pattern (** = any dirs, * = within a segment, ? = one char).
+  glob({ pattern }) {
+    if (!pattern) return { ok: false, error: "NO_PATTERN", hint: 'e.g. "src/**/*.js"' };
+    const esc = String(pattern).replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    const rx = "^" + esc
+      .replace(/\*\*\//g, "@@DIRS@@").replace(/\*\*/g, "@@ANY@@")
+      .replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]")
+      .replace(/@@DIRS@@/g, "(?:[^/]+/)*").replace(/@@ANY@@/g, ".*") + "$";
+    let re; try { re = new RegExp(rx); } catch { return { ok: false, error: "BAD_PATTERN" }; }
+    const out = [];
+    const walk = (dir, prefix) => {
+      for (const name of fs.readdirSync(dir)) {
+        if (name === "node_modules" || name === ".git") continue;
+        const full = path.join(dir, name), r = prefix ? prefix + "/" + name : name;
+        if (fs.statSync(full).isDirectory()) walk(full, r);
+        else if (re.test(r)) out.push(r);
+      }
+    };
+    walk(this.workdir, "");
+    return { ok: true, matches: out.slice(0, 300) };
+  }
+
+  // web_fetch: GET a URL and return readable text (scripts/styles/tags stripped).
+  async web_fetch({ url, max = 8000 }) {
+    if (!/^https?:\/\//i.test(url || "")) return { ok: false, error: "BAD_URL", hint: "Pass a full http(s) URL." };
+    try {
+      const r = await fetch(url, { headers: { "User-Agent": "cc-alt/0.1" }, signal: AbortSignal.timeout(15000) });
+      if (!r.ok) return { ok: false, error: `HTTP ${r.status}`, url };
+      let text = await r.text();
+      text = text.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ")
+        .replace(/<[^>]+>/g, " ").replace(/&(nbsp|amp|lt|gt|quot|#39);/g, " ").replace(/\s+/g, " ").trim();
+      return { ok: true, url, text: text.slice(0, max) };
+    } catch (e) { return { ok: false, error: String(e.message || e), url }; }
+  }
+
+  // web_search: grounded web search via OpenRouter's `web` plugin (uses the same key; counts tokens
+  // against your OpenRouter account, separate from the agent's own accounting).
+  async web_search({ query, max = 5 }) {
+    const key = this.opts.apiKey || process.env.OPENROUTER_API_KEY;
+    if (!key) return { ok: false, error: "NO_KEY", hint: "Set OPENROUTER_API_KEY to enable web search." };
+    if (!query) return { ok: false, error: "NO_QUERY" };
+    try {
+      const r = await fetch((this.opts.baseUrl || "https://openrouter.ai/api/v1") + "/chat/completions", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(30000),
+        body: JSON.stringify({
+          model: this.opts.model || "google/gemini-2.5-flash",
+          plugins: [{ id: "web", max_results: Math.max(1, Math.min(10, max | 0 || 5)) }],
+          messages: [{ role: "user", content: `Search the web and answer concisely WITH source URLs: ${query}` }],
+        }),
+      });
+      if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
+      const j = await r.json();
+      return { ok: true, query, answer: (j.choices?.[0]?.message?.content || "").slice(0, 4000) };
+    } catch (e) { return { ok: false, error: String(e.message || e) }; }
   }
 }

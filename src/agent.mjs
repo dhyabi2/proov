@@ -16,7 +16,11 @@ You work ONE tool call at a time. Respond with EXACTLY ONE JSON object, nothing 
   {"tool":"read_file","args":{"path":"rel/path.js"}}
   {"tool":"list_dir","args":{"path":"."}}
   {"tool":"grep","args":{"pattern":"regex","path":"."}}
+  {"tool":"glob","args":{"pattern":"src/**/*.js"}}
   {"tool":"run_command","args":{"command":"node check.js"}}
+  {"tool":"web_search","args":{"query":"how to X in library Y"}}
+  {"tool":"web_fetch","args":{"url":"https://..."}}
+  {"tool":"delegate","args":{"task":"a focused, self-contained sub-task to run in a fresh sub-agent"}}
   {"tool":"edit_file","args":{"path":"f.js","anchor":"<verbatim existing lines>","replacement":"<new lines>","op":"replace"}}
   {"tool":"create_file","args":{"path":"new.js","content":"<full content of a brand-NEW file>"}}
   {"tool":"edit_files","args":{"edits":[{"path":"a.js","anchor":"...","replacement":"...","op":"replace"},{"path":"b.js","anchor":"...","replacement":"..."}]}}
@@ -45,11 +49,12 @@ script, run it to verify → call done. Keep going until the task is verifiably 
 
 export function makeAgent(workdir, opts = {}) {
   const provider = new Provider(opts);
-  const tools = new Tools(workdir);
+  const tools = new Tools(workdir, opts);
   const toolMap = {
     read_file: (a) => tools.read_file(a),
     list_dir: (a) => tools.list_dir(a),
     grep: (a) => tools.grep(a),
+    glob: (a) => tools.glob(a),
     run_command: (a) => tools.run_command(a),
     edit_file: (a) => tools.edit_file(a),
     create_file: (a) => tools.create_file(a),
@@ -58,8 +63,20 @@ export function makeAgent(workdir, opts = {}) {
     git_diff: (a) => tools.git_diff(a),
     git_log: (a) => tools.git_log(a),
     git_commit: (a) => tools.git_commit(a),
+    web_fetch: (a) => tools.web_fetch(a),
+    web_search: (a) => tools.web_search(a),
+    delegate: (a) => delegateSubAgent(a, workdir, opts),
   };
   return { provider, tools, toolMap };
+}
+
+// delegate: run a focused SUB-TASK in a fresh agent (one level deep only — no recursion runaway).
+async function delegateSubAgent(a, workdir, opts) {
+  if ((opts._depth || 0) >= 1) return { ok: false, error: "MAX_DELEGATE_DEPTH", hint: "A sub-agent cannot spawn more sub-agents." };
+  const task = String(a?.task || "").trim();
+  if (!task) return { ok: false, error: "NO_TASK" };
+  const sub = await runAgent(task, workdir, { ...opts, _depth: (opts._depth || 0) + 1, maxSteps: Math.min(10, opts.maxSteps ?? 10), onStep: undefined });
+  return { ok: true, summary: sub.summary, turns: sub.turns, done: sub.done };
 }
 
 export async function runAgent(task, workdir, opts = {}) {
@@ -77,7 +94,7 @@ export class Session {
     this.workdir = path.resolve(workdir);
     this.opts = opts;
     this.provider = new Provider(opts);
-    this.tools = new Tools(workdir);
+    this.tools = new Tools(workdir, opts);
     this.messages = null; // seeded on first run; persists across turns
     this.maxSteps = opts.maxSteps ?? 16;
     // diff capture: edit tools record { path, before, after } on the session for the UI to read.
@@ -115,6 +132,10 @@ export class Session {
       git_diff: (a) => t.git_diff(a),
       git_log: (a) => t.git_log(a),
       git_commit: (a) => t.git_commit(a),
+      glob: (a) => t.glob(a),
+      web_fetch: (a) => t.web_fetch(a),
+      web_search: (a) => t.web_search(a),
+      delegate: (a) => delegateSubAgent(a, this.workdir, this.opts),
     };
   }
 
