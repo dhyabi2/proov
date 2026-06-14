@@ -1,6 +1,6 @@
 // repl.mjs — interactive multi-turn session.
 //
-// `cc-alt` (no task) opens this. You type a request, the agent works (streaming each step with a
+// `slivr` (no task) opens this. You type a request, the agent works (streaming each step with a
 // compact diff for edits), then you type the next — the conversation + tool results PERSIST across
 // turns (Session keeps the thread). Ctrl-C interrupts the CURRENT turn without killing the session;
 // a second Ctrl-C at the prompt exits. REPL commands: /help /model /cost /reset /exit.
@@ -27,7 +27,7 @@ const HELP = `commands:
   /model <id>      switch model (e.g. anthropic/claude-sonnet-4, openai/gpt-4o)
   /cost            show session tokens + cost so far
   /plan [on|off]   toggle plan-mode (agent must plan + get approval before editing)
-  /skills          list available skills (.cc-alt/skills/*.md, ~/.cc-alt/skills/*.md)
+  /skills          list available skills (.slivr/skills/*.md, ~/.slivr/skills/*.md)
   /run <name> [..] run a skill as a task (also: /<name> [..] if not a built-in command)
   /reset           clear the conversation context (keeps cost totals)
   /exit            quit
@@ -43,7 +43,7 @@ export async function startRepl({ workdir, config, palette } = {}) {
   let approval = config.approval;
 
   if (!session.provider.hasKey()) {
-    process.stdout.write(p.yellow("warning: no API key found — set OPENROUTER_API_KEY or apiKey in .cc-alt.json\n"));
+    process.stdout.write(p.yellow("warning: no API key found — set OPENROUTER_API_KEY or apiKey in .slivr.json\n"));
   }
   // Connect any configured MCP servers up front; their tools become callable as mcp__<server>__<tool>.
   if (config.mcpServers) {
@@ -55,7 +55,7 @@ export async function startRepl({ workdir, config, palette } = {}) {
 
   // the active mode is shown in the prompt; Shift-Tab / Tab cycles it (wired up below).
   const modeLabel = () => session.tools.planMode ? "plan" : approval;   // edits | auto | plan
-  const promptStr = () => p.cyan("cc-alt ") + p.dim("[" + modeLabel() + "]") + p.cyan("› ");
+  const promptStr = () => p.cyan("slivr ") + p.dim("[" + modeLabel() + "]") + p.cyan("› ");
   const rl = readline.createInterface({
     input: process.stdin, output: process.stdout, prompt: promptStr(),
     completer: (line) => [[], line],         // suppress Tab autocomplete — Tab is used for mode cycling
@@ -249,7 +249,7 @@ async function handleCommand(command, ctx) {
       return;
     case "skills": {
       const skills = listSkills(workdir);
-      if (!skills.length) { process.stdout.write(p.dim("no skills found. Add prompts under ./.cc-alt/skills/*.md or ~/.cc-alt/skills/*.md\n")); return; }
+      if (!skills.length) { process.stdout.write(p.dim("no skills found. Add prompts under ./.slivr/skills/*.md or ~/.slivr/skills/*.md\n")); return; }
       process.stdout.write(p.bold("skills") + p.dim("  (run with /run <name> [args] or /<name> [args])") + "\n");
       for (const s of skills) process.stdout.write(`  ${p.cyan(s.name.padEnd(14))} ${p.gray((s.description || "").slice(0, 70))}\n`);
       return;

@@ -1,4 +1,4 @@
-// agent.mjs — cc-alt harness (THE alternative). Compact-edit protocol via SEAL.
+// agent.mjs — slivr harness (THE alternative). Compact-edit protocol via SEAL.
 //
 // Tools: read_file, list_dir, grep, run_command, edit_file (anchor/replacement/op).
 // The agent edits with SMALL anchors and gets a COMPACT repair packet on failure — it never
@@ -11,7 +11,7 @@ import { Tools } from "./tools.mjs";
 import { runLoop } from "./loop.mjs";
 import { connectAll, closeAll, mcpPromptSection } from "./mcp.mjs";
 
-const SYSTEM = `You are cc-alt, a precise coding agent that edits a real repository.
+const SYSTEM = `You are slivr, a precise coding agent that edits a real repository.
 
 You work ONE tool call at a time. Respond with EXACTLY ONE JSON object, nothing else:
   {"tool":"read_file","args":{"path":"rel/path.js"}}
@@ -44,7 +44,7 @@ EDIT PROTOCOL (important — this is how you keep edits cheap and correct):
 - For SEVERAL edits at once (across one or more files), prefer edit_files — it applies them
   ATOMICALLY (all-or-nothing) in fewer turns; same anchor rules. If any edit fails, none apply
   and you get repair packets for the failing ones.
-- git_* tools inspect the repo and can commit; cc-alt NEVER pushes.
+- git_* tools inspect the repo and can commit; slivr NEVER pushes.
 
 MULTIMODAL: use view_image to LOOK at a screenshot/diagram/photo (png/jpg/gif/webp), and view_pdf
   to READ a PDF. After you call one, the file is attached to the conversation and you can describe

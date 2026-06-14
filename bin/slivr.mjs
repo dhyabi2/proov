@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// cc-alt — a configurable-LLM coding agent CLI.
+// slivr — a configurable-LLM coding agent CLI.
 //
-//   cc-alt                      open an interactive REPL in the current repo
-//   cc-alt "<task>" [dir]       run one task non-interactively (one-shot)
-//   cc-alt config               print the resolved configuration
-//   cc-alt --init               write a starter ./.cc-alt.json
-//   cc-alt --help / --version
+//   slivr                      open an interactive REPL in the current repo
+//   slivr "<task>" [dir]       run one task non-interactively (one-shot)
+//   slivr config               print the resolved configuration
+//   slivr --init               write a starter ./.slivr.json
+//   slivr --help / --version
 //
 // Flags (override config): --model <id>, --approval <auto|edits|all>, --auto, --dir <path>,
 //                          --baseline (compat: run the full-rewrite harness one-shot).
@@ -66,27 +66,27 @@ function parseArgs(argv) {
   return { flags, positional, baseline, init, help, version, auto, plan };
 }
 
-const HELP = `cc-alt — configurable-LLM coding agent (any Claude/GPT/Gemini model via OpenRouter)
+const HELP = `slivr — configurable-LLM coding agent (any Claude/GPT/Gemini model via OpenRouter)
 
 USAGE
-  cc-alt                       open an interactive REPL in the current directory
-  cc-alt "<task>" [dir]        run one task non-interactively (one-shot)
-  cc-alt config                print the resolved configuration (and where each value came from)
-  cc-alt skills                list available skills (.cc-alt/skills/*.md, ~/.cc-alt/skills/*.md)
-  cc-alt skill <name> [args]   run a skill one-shot (a reusable prompt template)
-  cc-alt mcp list              connect configured MCP servers and print their tools
-  cc-alt mcp add <name> -- <cmd...>   add an MCP server to ./.cc-alt.json
-  cc-alt bg "<task>" [dir]     run a task in a DETACHED background process (POSIX only)
-  cc-alt jobs [--watch]        list background jobs (id, status, task)
-  cc-alt logs <id>             print a background job's log
-  cc-alt schedule "<task>" --in 30m|--at <ISO>|--cron "<expr>"   schedule a task
-  cc-alt schedule list         list scheduled jobs (grouped: active vs done)
-  cc-alt schedule clear        prune completed once-jobs from the schedule
-  cc-alt scheduler             run the foreground poller that fires due scheduled jobs
-  cc-alt scheduler --daemon    start the poller DETACHED (pidfile ~/.cc-alt/scheduler.pid)
-  cc-alt scheduler status      report whether the daemon is running
-  cc-alt scheduler stop        stop the detached daemon
-  cc-alt --init                write a starter ./.cc-alt.json
+  slivr                       open an interactive REPL in the current directory
+  slivr "<task>" [dir]        run one task non-interactively (one-shot)
+  slivr config                print the resolved configuration (and where each value came from)
+  slivr skills                list available skills (.slivr/skills/*.md, ~/.slivr/skills/*.md)
+  slivr skill <name> [args]   run a skill one-shot (a reusable prompt template)
+  slivr mcp list              connect configured MCP servers and print their tools
+  slivr mcp add <name> -- <cmd...>   add an MCP server to ./.slivr.json
+  slivr bg "<task>" [dir]     run a task in a DETACHED background process (POSIX only)
+  slivr jobs [--watch]        list background jobs (id, status, task)
+  slivr logs <id>             print a background job's log
+  slivr schedule "<task>" --in 30m|--at <ISO>|--cron "<expr>"   schedule a task
+  slivr schedule list         list scheduled jobs (grouped: active vs done)
+  slivr schedule clear        prune completed once-jobs from the schedule
+  slivr scheduler             run the foreground poller that fires due scheduled jobs
+  slivr scheduler --daemon    start the poller DETACHED (pidfile ~/.slivr/scheduler.pid)
+  slivr scheduler status      report whether the daemon is running
+  slivr scheduler stop        stop the detached daemon
+  slivr --init                write a starter ./.slivr.json
 
 OPTIONS
   --model <id>                 model id (e.g. anthropic/claude-sonnet-4, openai/gpt-4o, google/gemini-2.5-flash)
@@ -95,23 +95,23 @@ OPTIONS
   --plan                       plan-mode: agent must produce + get approval for a numbered plan before editing
   --dir <path>                 working directory (default: cwd or the 2nd positional arg)
   --max-steps <n>              cap tool-calls per turn
-  --in/--at/--cron <v>         scheduling timing for "cc-alt schedule"
+  --in/--at/--cron <v>         scheduling timing for "slivr schedule"
   --every <secs>               scheduler poll interval (default 30)
-  --watch                      live-refresh "cc-alt jobs"
+  --watch                      live-refresh "slivr jobs"
   --baseline                   one-shot using the full-rewrite harness (for the cost benchmark)
   -h, --help                   show this help
   -v, --version                show version
 
-CONFIG  (precedence: flags > ./.cc-alt.json > ~/.cc-alt.json > env > defaults)
+CONFIG  (precedence: flags > ./.slivr.json > ~/.slivr.json > env > defaults)
   keys: model, apiKey, baseUrl, approval, maxSteps, maxTokensPerTurn
-  key:  set OPENROUTER_API_KEY in the environment (preferred) or apiKey in .cc-alt.json
+  key:  set OPENROUTER_API_KEY in the environment (preferred) or apiKey in .slivr.json
 
 EXAMPLES
-  cc-alt                                              # REPL, default model
-  cc-alt "add input validation to src/calc.js"        # one-shot in cwd
-  cc-alt "fix the failing test" ./myrepo --auto       # one-shot, no prompts
-  cc-alt --model anthropic/claude-sonnet-4            # REPL on Claude
-  cc-alt config                                       # show resolved config`;
+  slivr                                              # REPL, default model
+  slivr "add input validation to src/calc.js"        # one-shot in cwd
+  slivr "fix the failing test" ./myrepo --auto       # one-shot, no prompts
+  slivr --model anthropic/claude-sonnet-4            # REPL on Claude
+  slivr config                                       # show resolved config`;
 
 // ---- one-shot ---------------------------------------------------------------
 async function runOneShot(task, dir, config, palette, { auto, plan }) {
@@ -123,7 +123,7 @@ async function runOneShot(task, dir, config, palette, { auto, plan }) {
   });
   if (!session.provider.hasKey()) {
     process.stderr.write(p.yellow("no API key found — the agent cannot call the model.\n"));
-    process.stderr.write(p.dim("  fix: export OPENROUTER_API_KEY=sk-or-...   (or put \"apiKey\" in .cc-alt.json, or OPENROUTER_API_KEY in a .env)\n"));
+    process.stderr.write(p.dim("  fix: export OPENROUTER_API_KEY=sk-or-...   (or put \"apiKey\" in .slivr.json, or OPENROUTER_API_KEY in a .env)\n"));
     process.stderr.write(p.dim("  get one at https://openrouter.ai/keys\n"));
   }
   // Connect any configured MCP servers; their tools become callable as mcp__<server>__<tool>.
@@ -133,7 +133,7 @@ async function runOneShot(task, dir, config, palette, { auto, plan }) {
     for (const e of errors) process.stderr.write(p.yellow(`mcp · ${e.server} failed: ${e.error}\n`));
   }
   const approval = auto ? "auto" : config.approval;
-  process.stderr.write(p.dim(`cc-alt · model ${config.model} · ${path.resolve(dir)}${plan ? " · plan-mode" : ""}\n`));
+  process.stderr.write(p.dim(`slivr · model ${config.model} · ${path.resolve(dir)}${plan ? " · plan-mode" : ""}\n`));
 
   // Plan-approval: when a plan exists but isn't approved yet, approve it (auto/non-TTY -> auto-approve
   // but still SHOW it; interactive -> y/e/n). Edit lets the user replace the steps.
@@ -245,8 +245,8 @@ async function runOneShotInProcess(task, dir, log) {
 }
 
 // ---- mcp subcommand ---------------------------------------------------------
-//   cc-alt mcp list                       connect configured servers, print their tools
-//   cc-alt mcp add <name> -- <command...> write a server into ./.cc-alt.json
+//   slivr mcp list                       connect configured servers, print their tools
+//   slivr mcp add <name> -- <command...> write a server into ./.slivr.json
 async function runMcpCommand(args, config, p) {
   const sub = args[0];
 
@@ -258,12 +258,12 @@ async function runMcpCommand(args, config, p) {
     const dashdash = after.indexOf("--");
     const name = after[0];
     if (!name || dashdash === -1 || dashdash === 0) {
-      process.stderr.write(p.yellow("usage: cc-alt mcp add <name> -- <command> [args...]\n"));
+      process.stderr.write(p.yellow("usage: slivr mcp add <name> -- <command> [args...]\n"));
       return 1;
     }
     const cmd = after.slice(dashdash + 1);
     if (!cmd.length) { process.stderr.write(p.yellow("no command after --\n")); return 1; }
-    const target = path.join(process.cwd(), ".cc-alt.json");
+    const target = path.join(process.cwd(), ".slivr.json");
     let cfg = {};
     try { if (fs.existsSync(target)) cfg = JSON.parse(fs.readFileSync(target, "utf8")); } catch { cfg = {}; }
     cfg.mcpServers = cfg.mcpServers || {};
@@ -275,13 +275,13 @@ async function runMcpCommand(args, config, p) {
   }
 
   if (sub && sub !== "list") {
-    process.stderr.write(p.yellow(`unknown: cc-alt mcp ${sub}\nusage: cc-alt mcp list | cc-alt mcp add <name> -- <command...>\n`));
+    process.stderr.write(p.yellow(`unknown: slivr mcp ${sub}\nusage: slivr mcp list | slivr mcp add <name> -- <command...>\n`));
     return 1;
   }
 
   // default: list
   if (!config.mcpServers || !Object.keys(config.mcpServers).length) {
-    process.stdout.write(p.dim("no mcpServers configured (add an \"mcpServers\" block to .cc-alt.json or run: cc-alt mcp add <name> -- <command...>)\n"));
+    process.stdout.write(p.dim("no mcpServers configured (add an \"mcpServers\" block to .slivr.json or run: slivr mcp add <name> -- <command...>)\n"));
     return 0;
   }
   process.stderr.write(p.dim("connecting MCP servers…\n"));
@@ -319,12 +319,12 @@ async function main() {
     return runBackgroundJob(flags.bgRun, { loadConfig, runOneShotInProcess });
   }
 
-  if (version) { process.stdout.write(`cc-alt ${VERSION}\n`); return 0; }
+  if (version) { process.stdout.write(`slivr ${VERSION}\n`); return 0; }
   if (help) { process.stdout.write(HELP + "\n"); return 0; }
 
   if (init) {
     const r = writeStarterConfig(process.cwd());
-    if (!r.ok) { process.stderr.write(p.yellow(`.cc-alt.json already exists at ${r.path}\n`)); return 1; }
+    if (!r.ok) { process.stderr.write(p.yellow(`.slivr.json already exists at ${r.path}\n`)); return 1; }
     process.stdout.write(p.green(`wrote ${r.path}\n`));
     return 0;
   }
@@ -351,14 +351,14 @@ async function main() {
   // skills: list available skills. skill <name> [args...]: render a skill + run it one-shot.
   if (subcommand === "skills") {
     const skills = listSkills(process.cwd());
-    if (!skills.length) { process.stdout.write(p.dim("no skills found. Add prompts under ./.cc-alt/skills/*.md or ~/.cc-alt/skills/*.md\n")); return 0; }
-    process.stdout.write(p.bold("skills") + p.dim("  (run: cc-alt skill <name> [args...])") + "\n");
+    if (!skills.length) { process.stdout.write(p.dim("no skills found. Add prompts under ./.slivr/skills/*.md or ~/.slivr/skills/*.md\n")); return 0; }
+    process.stdout.write(p.bold("skills") + p.dim("  (run: slivr skill <name> [args...])") + "\n");
     for (const s of skills) process.stdout.write(`  ${p.cyan(s.name.padEnd(14))} ${p.gray((s.description || "").slice(0, 70))}\n`);
     return 0;
   }
   if (subcommand === "skill") {
     const name = positional[1];
-    if (!name) { process.stderr.write(p.yellow("usage: cc-alt skill <name> [args...]\n")); return 1; }
+    if (!name) { process.stderr.write(p.yellow("usage: slivr skill <name> [args...]\n")); return 1; }
     const r = renderSkill(name, positional.slice(2), process.cwd());
     if (!r.ok) { process.stderr.write(p.yellow(`no skill "${name}". available: ${r.available.join(", ") || "(none)"}\n`)); return 1; }
     const dir = flags.dir || process.cwd();
@@ -369,19 +369,19 @@ async function main() {
   // ---- background jobs --------------------------------------------------------
   if (subcommand === "bg") {
     const task = positional[1];
-    if (!task) { process.stderr.write(p.yellow('usage: cc-alt bg "<task>" [dir]\n')); return 1; }
+    if (!task) { process.stderr.write(p.yellow('usage: slivr bg "<task>" [dir]\n')); return 1; }
     const dir = flags.dir || positional[2] || process.cwd();
     if (!fs.existsSync(dir)) { process.stderr.write(p.red(`directory not found: ${dir}\n`)); return 2; }
     const rec = spawnBackground(task, dir);
     process.stdout.write(p.green(`started background job ${rec.id}`) + p.dim(` (pid ${rec.pid})\n`));
-    process.stdout.write(p.dim(`  log: ${logPath(rec.id)}\n  watch: cc-alt jobs   ·   cc-alt logs ${rec.id}\n`));
+    process.stdout.write(p.dim(`  log: ${logPath(rec.id)}\n  watch: slivr jobs   ·   slivr logs ${rec.id}\n`));
     return 0;
   }
   if (subcommand === "jobs") {
     const render = () => {
       const jobs = listJobs();
-      if (!jobs.length) { process.stdout.write(p.dim("no background jobs. start one: cc-alt bg \"<task>\"\n")); return; }
-      process.stdout.write(p.bold("jobs") + p.dim("  (logs: cc-alt logs <id>)") + "\n");
+      if (!jobs.length) { process.stdout.write(p.dim("no background jobs. start one: slivr bg \"<task>\"\n")); return; }
+      process.stdout.write(p.bold("jobs") + p.dim("  (logs: slivr logs <id>)") + "\n");
       for (const j of jobs) {
         const color = j.status === "done" ? p.green : j.status === "failed" ? p.red : j.status === "running" ? p.cyan : p.dim;
         process.stdout.write(`  ${p.gray(j.id)}  ${color((j.status || "?").padEnd(8))} ${String(j.task).replace(/\s+/g, " ").slice(0, 64)}\n`);
@@ -398,7 +398,7 @@ async function main() {
   }
   if (subcommand === "logs") {
     const id = positional[1];
-    if (!id) { process.stderr.write(p.yellow("usage: cc-alt logs <id>\n")); return 1; }
+    if (!id) { process.stderr.write(p.yellow("usage: slivr logs <id>\n")); return 1; }
     const lp = logPath(id);
     if (!fs.existsSync(lp)) { process.stderr.write(p.yellow(`no log for job ${id} (yet)\n`)); return 1; }
     process.stdout.write(fs.readFileSync(lp, "utf8"));
@@ -407,34 +407,34 @@ async function main() {
 
   // ---- scheduled jobs ---------------------------------------------------------
   if (subcommand === "schedule") {
-    // `cc-alt schedule clear` prunes completed once-jobs.
+    // `slivr schedule clear` prunes completed once-jobs.
     if (positional[1] === "clear") {
       const r = clearSchedule();
       process.stdout.write(p.green(`pruned ${r.removed} completed job(s)`) + p.dim(` — ${r.remaining} remaining\n`));
       return 0;
     }
-    // `cc-alt schedule list` shows scheduled jobs, grouped active vs done; otherwise schedule a new one.
+    // `slivr schedule list` shows scheduled jobs, grouped active vs done; otherwise schedule a new one.
     if (positional[1] === "list") {
       const sched = readSchedule();
-      if (!sched.length) { process.stdout.write(p.dim("no scheduled jobs. add one: cc-alt schedule \"<task>\" --in 30m\n")); return 0; }
+      if (!sched.length) { process.stdout.write(p.dim("no scheduled jobs. add one: slivr schedule \"<task>\" --in 30m\n")); return 0; }
       const { active, done } = groupSchedule(sched);
       const row = (j) => {
         const when = j.status === "done" ? "(done)" : typeof j.dueAt === "number" ? new Date(j.dueAt).toISOString() : "(done)";
         return `  ${p.gray(j.id)}  ${p.cyan((j.spec || j.kind || "?").padEnd(16))} next:${p.dim(when)}  ${String(j.task).replace(/\s+/g, " ").slice(0, 48)}\n`;
       };
-      process.stdout.write(p.bold("scheduled") + p.dim("  (run the poller: cc-alt scheduler --daemon)") + "\n");
+      process.stdout.write(p.bold("scheduled") + p.dim("  (run the poller: slivr scheduler --daemon)") + "\n");
       if (active.length) { process.stdout.write(p.bold("\n  active\n")); for (const j of active) process.stdout.write(row(j)); }
-      if (done.length) { process.stdout.write(p.dim("\n  done") + p.dim("  (prune: cc-alt schedule clear)") + "\n"); for (const j of done) process.stdout.write(row(j)); }
+      if (done.length) { process.stdout.write(p.dim("\n  done") + p.dim("  (prune: slivr schedule clear)") + "\n"); for (const j of done) process.stdout.write(row(j)); }
       return 0;
     }
     const task = positional[1];
-    if (!task) { process.stderr.write(p.yellow('usage: cc-alt schedule "<task>" --in 30m | --at <ISO> | --cron "<expr>"   ·   cc-alt schedule list\n')); return 1; }
+    if (!task) { process.stderr.write(p.yellow('usage: slivr schedule "<task>" --in 30m | --at <ISO> | --cron "<expr>"   ·   slivr schedule list\n')); return 1; }
     const dir = flags.dir || process.cwd();
     const r = makeScheduled({ task, dir, in: flags.in, at: flags.at, cron: flags.cron });
     if (!r.ok) { process.stderr.write(p.red(`schedule error: ${r.error}${r.value ? ` (${r.value})` : ""}\n`)); return 1; }
     addScheduled(r.rec);
     process.stdout.write(p.green(`scheduled job ${r.rec.id}`) + p.dim(` — ${r.rec.spec}, next ${new Date(r.rec.dueAt).toISOString()}\n`));
-    process.stdout.write(p.dim("  run the poller to fire it: cc-alt scheduler\n"));
+    process.stdout.write(p.dim("  run the poller to fire it: slivr scheduler\n"));
     return 0;
   }
   if (subcommand === "scheduler") {
@@ -458,7 +458,7 @@ async function main() {
         if (r.error === "ALREADY_RUNNING") { process.stderr.write(p.yellow(`scheduler already running (pid ${r.pid})\n`)); return 1; }
         process.stderr.write(p.red(`could not start scheduler daemon: ${r.error}\n`)); return 1;
       }
-      process.stdout.write(p.green(`scheduler daemon started`) + p.dim(` (pid ${r.pid}) — stop: cc-alt scheduler stop · status: cc-alt scheduler status\n`));
+      process.stdout.write(p.green(`scheduler daemon started`) + p.dim(` (pid ${r.pid}) — stop: slivr scheduler stop · status: slivr scheduler status\n`));
       return 0;
     }
     await runScheduler({ intervalMs, daemon: !!flags.daemonChild });   // foreground; never returns until killed
@@ -472,7 +472,7 @@ async function main() {
 
   if (hasTask) {
     if (baseline) {
-      process.stderr.write(p.dim(`cc-alt --baseline · model ${config.model}\n`));
+      process.stderr.write(p.dim(`slivr --baseline · model ${config.model}\n`));
       const res = await runBaseline(subcommand, dir, { model: config.model, apiKey: config.apiKey, baseUrl: config.baseUrl, maxSteps: config.maxSteps });
       process.stderr.write(`\ndone=${res.done} turns=${res.turns} ${JSON.stringify(res.totals)}\n`);
       return res.done ? 0 : 1;

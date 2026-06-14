@@ -1,6 +1,6 @@
 // config.mjs — layered configuration with explicit precedence.
 //
-//   flags  >  ./.cc-alt.json (local)  >  ~/.cc-alt.json (home)  >  env  >  defaults
+//   flags  >  ./.slivr.json (local)  >  ~/.slivr.json (home)  >  env  >  defaults
 //
 // Keys: model, apiKey, baseUrl, approval ('auto'|'edits'|'all'), maxSteps, maxTokensPerTurn.
 // resolveConfig() is PURE given its inputs (you inject the file loaders + env), so it's testable
@@ -27,13 +27,13 @@ const KNOWN_KEYS = Object.keys(DEFAULTS);
 function fromEnv(env) {
   const out = {};
   if (env.MODEL) out.model = env.MODEL;
-  if (env.CCALT_MODEL) out.model = env.CCALT_MODEL;
+  if (env.SLIVR_MODEL) out.model = env.SLIVR_MODEL;
   if (env.OPENROUTER_API_KEY) out.apiKey = env.OPENROUTER_API_KEY;
-  if (env.CCALT_API_KEY) out.apiKey = env.CCALT_API_KEY;
-  if (env.CCALT_BASE_URL) out.baseUrl = env.CCALT_BASE_URL;
-  if (env.CCALT_APPROVAL) out.approval = env.CCALT_APPROVAL;
-  if (env.CCALT_MAX_STEPS) out.maxSteps = Number(env.CCALT_MAX_STEPS);
-  if (env.CCALT_MAX_TOKENS) out.maxTokensPerTurn = Number(env.CCALT_MAX_TOKENS);
+  if (env.SLIVR_API_KEY) out.apiKey = env.SLIVR_API_KEY;
+  if (env.SLIVR_BASE_URL) out.baseUrl = env.SLIVR_BASE_URL;
+  if (env.SLIVR_APPROVAL) out.approval = env.SLIVR_APPROVAL;
+  if (env.SLIVR_MAX_STEPS) out.maxSteps = Number(env.SLIVR_MAX_STEPS);
+  if (env.SLIVR_MAX_TOKENS) out.maxTokensPerTurn = Number(env.SLIVR_MAX_TOKENS);
   return out;
 }
 
@@ -88,14 +88,14 @@ function readJSONSafe(file) {
 
 // Wire resolveConfig to the real environment. cwd defaults to process.cwd().
 export function loadConfig({ flags = {}, cwd = process.cwd(), env = process.env } = {}) {
-  const localPath = path.join(cwd, ".cc-alt.json");
-  const homePath = path.join(os.homedir(), ".cc-alt.json");
+  const localPath = path.join(cwd, ".slivr.json");
+  const homePath = path.join(os.homedir(), ".slivr.json");
   const local = readJSONSafe(localPath);
   const home = readJSONSafe(homePath);
   // Portable key fallback: if no key in env, read OPENROUTER_API_KEY from a cwd .env/.env.local
-  // so `cc-alt config` reflects the SAME key the provider will actually use (no silent mismatch).
+  // so `slivr config` reflects the SAME key the provider will actually use (no silent mismatch).
   let env2 = env;
-  if (!env.OPENROUTER_API_KEY && !env.CCALT_API_KEY) {
+  if (!env.OPENROUTER_API_KEY && !env.SLIVR_API_KEY) {
     const k = readDotenvKey(cwd);
     if (k) env2 = { ...env, OPENROUTER_API_KEY: k };
   }
@@ -132,7 +132,7 @@ export const STARTER_CONFIG = {
 };
 
 export function writeStarterConfig(cwd = process.cwd()) {
-  const target = path.join(cwd, ".cc-alt.json");
+  const target = path.join(cwd, ".slivr.json");
   if (fs.existsSync(target)) return { ok: false, error: "EXISTS", path: target };
   fs.writeFileSync(target, JSON.stringify(STARTER_CONFIG, null, 2) + "\n");
   return { ok: true, path: target };

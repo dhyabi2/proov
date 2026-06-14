@@ -1,30 +1,65 @@
-# cc-alt — a configurable-LLM Claude Code alternative
+<p align="center"><img src="assets/logo.png" width="116" alt="Slivr logo"></p>
 
-`cc-alt` is a real, daily-use CLI coding agent: an **interactive REPL** (and one-shot mode) that
-explores a repo, makes **compact anchor-based edits** with a **live colored diff**, runs checks,
-asks before risky actions, and stops when the task is verifiably done — driven by **any** model you
-plug in (Claude / GPT / Gemini) over OpenRouter.
+<h1 align="center">Slivr</h1>
 
-> **The real invention** is the edit engine: a *correctness-first compact-edit protocol* that lets the
-> agent change code **without ever re-sending whole files** — so edits to **large files** are
-> **65–89% cheaper at equal-or-better correctness** (where full-rewrite tools often *fail* — our
-> baseline scored **0/18** on large files, with token runaways) and structurally **safer** (it
-> refuses ambiguous anchors instead of silently editing the wrong place), on **any** model.
-> Cost-neutral-to-slightly-negative on small files — see the honest per-regime breakdown.
-> Full deep-dive — mechanism, measured results, honest scope, and how it was invented: **[INVENTION.md](INVENTION.md)**.
+<p align="center"><b>The coding agent that edits a <i>sliver</i>, not the whole file.</b></p>
+
+A fast, low-cost CLI coding agent for your terminal — driven by **any** model you plug in (Claude,
+GPT, Gemini, …) over OpenRouter. Slivr's edge is its **edit engine**: a precise anchor-based protocol
+that changes code **without ever re-sending whole files**, so edits stay cheap and never land in the
+wrong place.
+
+- 🎯 **Precise edits** — sends a tiny unique snippet, never the whole file; refuses ambiguous anchors instead of silently editing the wrong line.
+- ⚡ **Cheap on big files** — large-file edits are **65–89% cheaper at equal-or-better correctness** (measured, 130-run benchmark), where full-rewrite tools blow up. (Small files: a wash — [honest breakdown](INVENTION.md).)
+- 🔌 **Any model** — fully provider-agnostic via OpenRouter; swap models mid-session.
+- 🧰 **Full toolbox** — read / edit / multi-edit / run / grep / glob / git.
+- 🔗 **MCP** — connect external tool servers (Model Context Protocol).
+- 👁 **Multimodal** — `view_image` / `view_pdf` so the model can see screenshots & read PDFs.
+- 🗂 **Orchestration** — parallel sub-agents, plan-mode, live task checklists.
+- ⏱ **Background & scheduled** — detached jobs + a schedule poller.
+- 🛡 **Safe** — diff-preview approval, destructive-command blocklist, workdir sandbox.
+- ⌨️ **REPL** — streaming colored diffs, Shift-Tab to cycle modes, persistent context.
+
+> **How the edit engine works**, why it's cheaper, the measured results, and the honest scope:
+> **[INVENTION.md](INVENTION.md)**.
 
 ## Install
 
 ```bash
-# one line — puts `cc-alt` on your PATH (pure Node >= 18, no build, no deps)
-curl -fsSL https://raw.githubusercontent.com/dhyabi2/cc-alt/main/install.sh | bash
+# one line — puts `slivr` on your PATH (pure Node >= 18, no build, no deps)
+curl -fsSL https://raw.githubusercontent.com/dhyabi2/slivr/main/install.sh | bash
 
 # …or run without installing
-npx github:dhyabi2/cc-alt --help
+npx github:dhyabi2/slivr --help
 
 # …or from a clone
-git clone https://github.com/dhyabi2/cc-alt && cd cc-alt && npm link
+git clone https://github.com/dhyabi2/slivr && cd slivr && npm link
 ```
+
+## How Slivr compares
+
+A high-level snapshot of terminal-first coding agents (mid-2026 — check each tool's docs for the
+latest; `~` = partial / varies).
+
+| | **Slivr** | Claude Code | Aider | OpenHands | Cursor |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Runs in your **terminal** | ✅ | ✅ | ✅ | ✅ | ❌ (editor/IDE) |
+| **Any model** (provider-agnostic) | ✅ via OpenRouter | ❌ Claude only | ✅ many | ✅ many | ~ a few |
+| **Bring-your-own-key** (no subscription) | ✅ | ❌ | ✅ | ✅ | ❌ |
+| **Precise edits** — never re-sends whole files | ✅ anchor engine | ✅ | ~ edit-blocks | ~ | ~ |
+| **Large-file edit cost** | **lowest** — measured 65–89% < full-rewrite | — | — | — | — |
+| **MCP** servers | ✅ | ✅ | ~ | ✅ | ✅ |
+| **Multimodal** (images / PDFs) | ✅ | ✅ | ~ images | ~ | ✅ |
+| **Plan mode** | ✅ | ✅ | ❌ | ~ | ~ |
+| **Parallel sub-agents** | ✅ | ✅ | ❌ | ~ | ❌ |
+| **Background / scheduled** jobs | ✅ | ~ | ❌ | ~ | ❌ |
+| **Skills / slash-commands** | ✅ | ✅ | ~ | ~ | ✅ |
+
+Slivr's distinctive combination: **provider-agnostic + bring-your-own-key + the lowest measured
+large-file edit cost** (its anchor-edit engine), with the full modern toolbox (MCP, multimodal,
+plan-mode, orchestration, background jobs) in a single terminal binary. It does **not** claim to be
+*smarter* than any of these — quality comes from the model you plug in; Slivr competes on edit cost,
+reliability, and openness. ([the honest, measured scope](INVENTION.md).)
 
 ## Quickstart (daily use)
 
@@ -33,18 +68,18 @@ git clone https://github.com/dhyabi2/cc-alt && cd cc-alt && npm link
 export OPENROUTER_API_KEY=sk-or-...
 
 # 3. (optional) configure the model + defaults for this repo
-cc-alt --init                    # writes a starter ./.cc-alt.json
-cc-alt config                    # show the resolved config and where each value came from
+slivr --init                    # writes a starter ./.slivr.json
+slivr config                    # show the resolved config and where each value came from
 
 # 4. work
-cc-alt                                                  # interactive REPL in the current repo
-cc-alt "add input validation to src/calc.js"            # one-shot in the current dir
-cc-alt "fix the failing test" ./myrepo --auto           # one-shot, no approval prompts
-cc-alt --model anthropic/claude-sonnet-4                # REPL on Claude
+slivr                                                  # interactive REPL in the current repo
+slivr "add input validation to src/calc.js"            # one-shot in the current dir
+slivr "fix the failing test" ./myrepo --auto           # one-shot, no approval prompts
+slivr --model anthropic/claude-sonnet-4                # REPL on Claude
 ```
 
 ### The REPL
-Running `cc-alt` with no task opens a multi-turn session. **Conversation + tool results persist
+Running `slivr` with no task opens a multi-turn session. **Conversation + tool results persist
 across turns** — ask a follow-up and the agent still has the context. As it works it streams each
 step (`✓ edit src/foo.js +3 -1`) with a compact colored unified diff of every change. **Ctrl-C**
 interrupts the current turn without killing the session; a second Ctrl-C at the prompt exits.
@@ -52,8 +87,8 @@ interrupts the current turn without killing the session; a second Ctrl-C at the 
 REPL commands: `/help` · `/model <id>` (switch model mid-session) · `/cost` (session tokens + $) ·
 `/reset` (clear context, keep cost totals) · `/exit`.
 
-### Config (`cc-alt config`, `--init`)
-Resolved with precedence **flags > `./.cc-alt.json` > `~/.cc-alt.json` > env > defaults**. Keys:
+### Config (`slivr config`, `--init`)
+Resolved with precedence **flags > `./.slivr.json` > `~/.slivr.json` > env > defaults**. Keys:
 `model`, `apiKey` (prefer the `OPENROUTER_API_KEY` env var), `baseUrl` (default OpenRouter),
 `approval` (`auto`|`edits`|`all`), `maxSteps`, `maxTokensPerTurn`, and `mcpServers` (see
 [MCP](#mcp--connect-external-tool-servers)). **The model is fully configurable** — any OpenRouter id
@@ -71,16 +106,16 @@ disk, `sudo`, machine shutdown, …). `run_command` is also sandboxed to the wor
 
 ### CLI reference
 ```
-cc-alt                       interactive REPL in the current directory
-cc-alt "<task>" [dir]        one-shot
-cc-alt config                print resolved config
-cc-alt --init                write a starter ./.cc-alt.json
-cc-alt mcp list              connect configured MCP servers and list their tools
-cc-alt mcp add <name> -- <command...>   add an MCP server to ./.cc-alt.json
-cc-alt skills                list skills    ·   cc-alt skill <name> [args]   run one
-cc-alt bg "<task>" [dir]     detached background run (POSIX)  ·  jobs / logs <id>
-cc-alt schedule "<task>" --in 30m|--at <ISO>|--cron "<expr>"   ·  schedule list / clear
-cc-alt scheduler [--daemon|status|stop] [--every <sec>]   run/manage the schedule poller
+slivr                       interactive REPL in the current directory
+slivr "<task>" [dir]        one-shot
+slivr config                print resolved config
+slivr --init                write a starter ./.slivr.json
+slivr mcp list              connect configured MCP servers and list their tools
+slivr mcp add <name> -- <command...>   add an MCP server to ./.slivr.json
+slivr skills                list skills    ·   slivr skill <name> [args]   run one
+slivr bg "<task>" [dir]     detached background run (POSIX)  ·  jobs / logs <id>
+slivr schedule "<task>" --in 30m|--at <ISO>|--cron "<expr>"   ·  schedule list / clear
+slivr scheduler [--daemon|status|stop] [--every <sec>]   run/manage the schedule poller
 flags: --model <id>  --approval <auto|edits|all>  --auto  --plan  --dir <path>  --max-steps <n>
        --baseline (one-shot full-rewrite harness, for the benchmark)  --help  --version
 ```
@@ -114,8 +149,8 @@ concrete steps; **all edits and commands are blocked until a plan exists and is 
 prints the plan and asks `proceed? [y]es / [e]dit / [n]o` — `edit` lets you type a revised plan, `no`
 aborts. Under `--auto` the plan is **auto-approved** but still shown.
 ```
-cc-alt --plan "refactor the auth module"        # interactive: review the plan, then it executes
-cc-alt --plan --auto "add a healthcheck route"  # shows the plan, auto-approves, executes
+slivr --plan "refactor the auth module"        # interactive: review the plan, then it executes
+slivr --plan --auto "add a healthcheck route"  # shows the plan, auto-approves, executes
 # REPL: /plan [on|off]   toggle for the session (re-planned each request)
 ```
 
@@ -136,12 +171,12 @@ even in `--auto`).
 
 ### MCP — connect external tool servers
 
-cc-alt is an **MCP (Model Context Protocol) client** (stdio transport), the same extensibility
+slivr is an **MCP (Model Context Protocol) client** (stdio transport), the same extensibility
 Claude Code has. Point it at any MCP server and that server's tools become callable by the model as
 **namespaced tools** `mcp__<server>__<tool>` — they're appended to the system prompt (name + one-line
 description + a compact input-schema hint) and dispatched over JSON-RPC 2.0 to the server process.
 
-Configure servers in `./.cc-alt.json` (or `~/.cc-alt.json`) under an `mcpServers` block — the same
+Configure servers in `./.slivr.json` (or `~/.slivr.json`) under an `mcpServers` block — the same
 shape Claude Desktop uses:
 ```jsonc
 {
@@ -162,17 +197,17 @@ shape Claude Desktop uses:
 ```
 Then:
 ```
-cc-alt mcp list                                       # connect + print discovered tools per server
-cc-alt mcp add weather -- npx -y some-weather-mcp     # write a server entry into ./.cc-alt.json
-cc-alt "use mcp__everything__echo to echo 'hi'"       # the model calls the namespaced tool
+slivr mcp list                                       # connect + print discovered tools per server
+slivr mcp add weather -- npx -y some-weather-mcp     # write a server entry into ./.slivr.json
+slivr "use mcp__everything__echo to echo 'hi'"       # the model calls the namespaced tool
 ```
 When the REPL/one-shot starts it connects every enabled server, surfaces their tools, and **kills the
 child processes cleanly on exit**. A broken or missing server is reported and skipped — it never blocks
-the rest. If no `mcpServers` are configured, nothing changes and cc-alt behaves exactly as before.
+the rest. If no `mcpServers` are configured, nothing changes and slivr behaves exactly as before.
 
 ### Multimodal — let the model SEE images and READ PDFs
 
-cc-alt can attach images and PDFs to the conversation so a vision model actually looks at them. Two
+slivr can attach images and PDFs to the conversation so a vision model actually looks at them. Two
 tools (both sandboxed to the workdir):
 
 - `view_image({path})` — png/jpg/jpeg/gif/webp/bmp. The loop pushes a user message whose `content`
@@ -183,12 +218,12 @@ tools (both sandboxed to the workdir):
 
 Use a **multimodal model** (e.g. `google/gemini-2.5-flash`). Just ask in plain language:
 ```
-cc-alt "view_image screenshot.png and describe the error dialog" --auto
-cc-alt "view_pdf spec.pdf and summarize section 3" --auto
+slivr "view_image screenshot.png and describe the error dialog" --auto
+slivr "view_pdf spec.pdf and summarize section 3" --auto
 ```
 Verified live: the agent read the word and colors in a generated PNG, and extracted text from a PDF.
 
-**PDF text extraction (with automatic local fallback).** For text PDFs cc-alt first tries OpenRouter's
+**PDF text extraction (with automatic local fallback).** For text PDFs slivr first tries OpenRouter's
 `file-parser` plugin (`pdf-text`). If that's unavailable or the model can't ingest the file block,
 `view_pdf` **automatically falls back to a local extractor** — `pdftotext` (poppler) or `mutool` if
 either is on your `PATH` — and returns the extracted text. If a PDF has **no extractable text** (a
@@ -198,15 +233,15 @@ tool); scanned PDFs are clearly reported as needing OCR (out of scope).
 
 ### Skills — reusable prompt templates (`/skills`, slash-commands)
 
-A skill is a Markdown file = a saved prompt you can run by name. Discovery order: **`./.cc-alt/skills/*.md`
-(project)** then **`~/.cc-alt/skills/*.md` (user)**; a project skill shadows a user skill of the same
+A skill is a Markdown file = a saved prompt you can run by name. Discovery order: **`./.slivr/skills/*.md`
+(project)** then **`~/.slivr/skills/*.md` (user)**; a project skill shadows a user skill of the same
 name. Each file: an optional `# Title`, an optional `<!-- description: … -->` (or `---`/frontmatter),
 and a body where `$ARGS` / `{{args}}` is replaced by the user's args and `$1 $2 …` by positional words.
 
 ```
-cc-alt skills                       # list discovered skills (name + description)
-cc-alt skill review                 # run a skill one-shot
-cc-alt skill commit "context here"  # args fill $ARGS / $1 …
+slivr skills                       # list discovered skills (name + description)
+slivr skill review                 # run a skill one-shot
+slivr skill commit "context here"  # args fill $ARGS / $1 …
 ```
 In the REPL:
 ```
@@ -214,11 +249,11 @@ In the REPL:
 /run review          run a skill as a turn
 /review              same — /<name> runs a skill if it isn't a built-in command
 ```
-Ships with three examples under [`.cc-alt/skills/`](.cc-alt/skills/): `review.md` (review the staged
+Ships with three examples under [`.slivr/skills/`](.slivr/skills/): `review.md` (review the staged
 diff), `test.md` (find + run the suite, fix failures), `commit.md` (write a message + commit). Drop
-your own `.md` files in `./.cc-alt/skills/` to add more — no code changes.
+your own `.md` files in `./.slivr/skills/` to add more — no code changes.
 
-Example skill (`.cc-alt/skills/review.md`):
+Example skill (`.slivr/skills/review.md`):
 ```markdown
 # Review staged diff
 <!-- description: review the staged git diff for bugs and issues -->
@@ -229,32 +264,32 @@ Report concrete findings; do NOT edit anything.
 ### Background & scheduled tasks
 
 Run a task in a **detached** process (it keeps running after the command returns), or schedule one
-for later. State lives under `~/.cc-alt/` (`jobs/<id>.json` + `jobs/<id>.log`, and `schedule.json`).
+for later. State lives under `~/.slivr/` (`jobs/<id>.json` + `jobs/<id>.log`, and `schedule.json`).
 
 ```
-cc-alt bg "fix the failing test and commit" ./repo   # detached; runs cc-alt one-shot --auto
-cc-alt jobs                                           # list jobs: id, status (queued/running/done/failed), task
-cc-alt jobs --watch                                   # repaint every 2s
-cc-alt logs <id>                                      # print that job's captured log
+slivr bg "fix the failing test and commit" ./repo   # detached; runs slivr one-shot --auto
+slivr jobs                                           # list jobs: id, status (queued/running/done/failed), task
+slivr jobs --watch                                   # repaint every 2s
+slivr logs <id>                                      # print that job's captured log
 
-cc-alt schedule "run the nightly check" --in 2h       # also: --at <ISO>  or  --cron "*/5 * * * *"
-cc-alt schedule list                                  # scheduled jobs, GROUPED active vs done, + next run
-cc-alt schedule clear                                 # prune completed once-jobs from the schedule
+slivr schedule "run the nightly check" --in 2h       # also: --at <ISO>  or  --cron "*/5 * * * *"
+slivr schedule list                                  # scheduled jobs, GROUPED active vs done, + next run
+slivr schedule clear                                 # prune completed once-jobs from the schedule
 
 # the poller (runs due jobs) — foreground OR as a detached background service:
-cc-alt scheduler                                      # foreground sleep-loop poller (Ctrl-C to stop)
-cc-alt scheduler --daemon                             # detach + write ~/.cc-alt/scheduler.pid
-cc-alt scheduler status                               # report running / not (reads the pidfile)
-cc-alt scheduler stop                                 # stop the detached poller
+slivr scheduler                                      # foreground sleep-loop poller (Ctrl-C to stop)
+slivr scheduler --daemon                             # detach + write ~/.slivr/scheduler.pid
+slivr scheduler status                               # report running / not (reads the pidfile)
+slivr scheduler stop                                 # stop the detached poller
 ```
-**Honest about the design:** `cc-alt bg` spawns a real detached child (`spawn(..., {detached:true,
+**Honest about the design:** `slivr bg` spawns a real detached child (`spawn(..., {detached:true,
 stdio:'ignore'})`) on **macOS/Linux**; on Windows (or if the detached spawn fails) it refuses with a
-clear message rather than crashing — background tasks need a POSIX shell. `cc-alt scheduler` is a
+clear message rather than crashing — background tasks need a POSIX shell. `slivr scheduler` is a
 **simple sleep-loop poller** (default every 30s; `--every <sec>`), **not a system cron daemon** —
 scheduled jobs only fire while it's running. Run it in the foreground, or `--daemon` it (it survives
 the terminal and is managed via `scheduler status` / `scheduler stop`), or wrap it in launchd/systemd
 for boot persistence. When the poller hits a due job it spawns it in the background exactly like
-`cc-alt bg`; once-jobs are marked `done` (clear them with `schedule clear`), cron-jobs are rescheduled
+`slivr bg`; once-jobs are marked `done` (clear them with `schedule clear`), cron-jobs are rescheduled
 to their next time. The built-in cron parser supports the common 5-field forms (`*`, `*/n`, `a,b`, `a-b`).
 
 ---
@@ -269,7 +304,7 @@ It exists to test ONE claim at the **harness level** (not model-vs-model, not mo
 > file size and multi-edit sessions.
 
 ## The two harnesses (only one thing differs)
-| | cc-alt | baseline (Claude-Code-style) |
+| | slivr | baseline (Claude-Code-style) |
 |---|---|---|
 | model | configurable (same) | configurable (same) |
 | tools | read_file, list_dir, grep, run_command (same) | same |
@@ -292,7 +327,7 @@ executes the resulting code and asserts observable behavior (exit 0 == success).
 
 | harness | success | total tokens | total cost | total turns | edit failures |
 |---|---|---|---|---|---|
-| **cc-alt** | **7/8** | **27,406** | **$0.01126** | 35 | 0 |
+| **slivr** | **7/8** | **27,406** | **$0.01126** | 35 | 0 |
 | baseline | 7/8 | 580,322 | $0.31099 | 82 | 0 |
 
 **Equal success (7/8 each) at 96.4% lower total cost** on the same model. Cost saved by file-size
@@ -301,9 +336,9 @@ regime: large-single **99.3%**, small-single **66.4%**, small-multi **56.5%**, m
 Each harness failed exactly one task, for opposite reasons that illustrate the thesis:
 - **baseline** failed `fix-bug-largefile`: full-rewriting the 246-line file every turn ran away to
   521k tokens, hit the step cap, and never converged — the runaway-context failure mode.
-- **cc-alt** failed `config-constant`: the model emitted **syntactically invalid code**
-  (`export import {...}`) — a *model* error, not a harness one (cc-alt made the edits cleanly in 3
-  turns with 0 edit failures). An earlier version of cc-alt failed this task with 15 edit failures
+- **slivr** failed `config-constant`: the model emitted **syntactically invalid code**
+  (`export import {...}`) — a *model* error, not a harness one (slivr made the edits cleanly in 3
+  turns with 0 edit failures). An earlier version of slivr failed this task with 15 edit failures
   because it lacked a file-creation tool; adding `create_file` fixed that harness gap (the remaining
   failure is purely the model writing bad JS).
 
@@ -313,7 +348,7 @@ Per-task rows are in `bench/results.json`.
 
 | harness | success | total tokens | total cost | total turns |
 |---|---|---|---|---|
-| cc-alt | 3/3 | 22,834 | $0.09227 | 22 |
+| slivr | 3/3 | 22,834 | $0.09227 | 22 |
 | baseline | 3/3 | 22,589 | $0.09304 | 24 |
 
 Deliberately run on only the **small** tasks (no large-file blowup) to cap spend. Result: a **tie**
@@ -324,16 +359,16 @@ phenomenon, not a universal one. (Raw: `bench/results-sonnet-small.json`.)
 ### The headline: large file, single bug fix (`fix-bug-largefile`, 246-line module)
 | harness | success | tokens | cost | turns |
 |---|---|---|---|---|
-| **cc-alt** | **PASS** | 5,912 | **$0.00201** | 3 |
+| **slivr** | **PASS** | 5,912 | **$0.00201** | 3 |
 | baseline | FAIL | 521,859 | $0.28859 | 16 (hit cap) |
 
 On a large file the baseline doesn't just cost more — it **derails**: re-reading and re-writing the
 whole 246-line file every turn burned **521k tokens**, hit the step cap, cost ~**$0.29**, and still
-failed the oracle. cc-alt read once, made one targeted edit, verified, and finished: **99.3%
+failed the oracle. slivr read once, made one targeted edit, verified, and finished: **99.3%
 cheaper AND higher success**. This is the clearest expression of the thesis.
 
 ### Where the win is marginal or NEGATIVE (honest)
-On a **tiny single-edit file** (`fix-offbyone`, 7 lines) cc-alt was **~73% MORE expensive**
+On a **tiny single-edit file** (`fix-offbyone`, 7 lines) slivr was **~73% MORE expensive**
 (4,344 vs 2,163 tokens) — both passed. A full rewrite of a 7-line file is trivially cheap, while
 the compact protocol pays overhead (verbose anchors, an extra exploration turn). **The advantage
 is conditional on file size / edit locality.** It pays off on large files and multi-edit sessions
@@ -360,16 +395,16 @@ sessions), neutral-to-slightly-worse on trivial edits.*
   `src/diff.mjs` (unified-diff renderer) · `src/safety.mjs` (blocklist + approval) · `src/ui.mjs` (colors/footer)
 - MCP client: `src/mcp.mjs` (stdio JSON-RPC client + tool catalog) · `test/stub-mcp.mjs` (local test server)
 - multimodal: `src/multimodal.mjs` (image/pdf block builders + pdf-plugin) · tools `view_image`/`view_pdf` in `src/tools.mjs`
-- skills: `src/skills.mjs` (discovery + arg substitution) · `.cc-alt/skills/*.md` (example prompts)
+- skills: `src/skills.mjs` (discovery + arg substitution) · `.slivr/skills/*.md` (example prompts)
 - background/scheduled: `src/jobs.mjs` (store + duration/cron parsing) · `src/scheduler.mjs` (detached spawn + poller)
-- `bin/cc-alt.mjs` — main CLI · `bin/agent.mjs` — original benchmark CLI · `demo.mjs` — live side-by-side · `selftest.mjs` — deterministic (no LLM)
+- `bin/slivr.mjs` — main CLI · `bin/agent.mjs` — original benchmark CLI · `demo.mjs` — live side-by-side · `selftest.mjs` — deterministic (no LLM)
 - `bench/tasks.mjs` `bench/run.mjs` `bench/results.json` · `SPEC.md`
 
 ## Run it
 ```
 node selftest.mjs                                   # 145 deterministic tests, no API key
-cc-alt                                              # REPL (after `npm link`)
-node bin/cc-alt.mjs "<task>" ./repo --auto          # one-shot without install
+slivr                                              # REPL (after `npm link`)
+node bin/slivr.mjs "<task>" ./repo --auto          # one-shot without install
 MODEL=google/gemini-2.5-flash node demo.mjs         # live side-by-side (needs OPENROUTER_API_KEY)
 MODEL=google/gemini-2.5-flash node bench/run.mjs     # full head-to-head benchmark
 ```

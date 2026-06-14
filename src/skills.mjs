@@ -6,7 +6,7 @@
 //   positional words. Lines like  ---\nkey: value\n---  (frontmatter) are also parsed for
 //   title/description and stripped from the body.
 //
-// Discovery: ./.cc-alt/skills/*.md (project) THEN ~/.cc-alt/skills/*.md (user). A project skill
+// Discovery: ./.slivr/skills/*.md (project) THEN ~/.slivr/skills/*.md (user). A project skill
 // shadows a user skill of the same name. Pure parsing/substitution lives here so it is unit-tested
 // with no LLM; the runners (REPL /run, CLI skill) live in repl.mjs / bin.
 
@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 
 export function skillDirs(cwd = process.cwd()) {
-  return [path.join(cwd, ".cc-alt", "skills"), path.join(os.homedir(), ".cc-alt", "skills")];
+  return [path.join(cwd, ".slivr", "skills"), path.join(os.homedir(), ".slivr", "skills")];
 }
 
 // Parse a skill file's raw text into { title, description, body }.

@@ -43,7 +43,7 @@ console.log("== 1. SEAL compact edit protocol ==");
 }
 
 console.log("== 2. tool sandbox ==");
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ccalt-"));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "slivr-"));
 {
   fs.writeFileSync(path.join(tmp, "f.js"), "export const N = 1;\nexport const M = 2;\n");
   const t = new Tools(tmp);
@@ -107,7 +107,7 @@ console.log("== 4. config resolution / merge precedence ==");
     flags: { model: "flag/model" },
     local: { model: "local/model", approval: "all" },
     home: { model: "home/model", maxSteps: 5 },
-    env: { MODEL: "env/model", CCALT_MAX_TOKENS: "999" },
+    env: { MODEL: "env/model", SLIVR_MAX_TOKENS: "999" },
   });
   ok("flags beat all", r.config.model === "flag/model", r.config.model);
   ok("local beats home (approval)", r.config.approval === "all");
@@ -122,9 +122,9 @@ console.log("== 4. config resolution / merge precedence ==");
   ok("empty model ignored -> default", s.config.model === DEFAULTS.model);
   ok("unknown key dropped", s.config.junk === undefined);
 
-  // env key precedence: CCALT_MODEL over MODEL
-  const e = resolveConfig({ env: { MODEL: "a", CCALT_MODEL: "b" } });
-  ok("CCALT_MODEL overrides MODEL", e.config.model === "b");
+  // env key precedence: SLIVR_MODEL over MODEL
+  const e = resolveConfig({ env: { MODEL: "a", SLIVR_MODEL: "b" } });
+  ok("SLIVR_MODEL overrides MODEL", e.config.model === "b");
 }
 
 console.log("== 5. destructive-command blocklist ==");
@@ -447,9 +447,9 @@ console.log("== 15. skills: discovery + arg substitution (no LLM) ==");
 
   // discovery from a temp project dir (project shadows user is exercised by 'project wins' ordering)
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), "ccskills-"));
-  fs.mkdirSync(path.join(proj, ".cc-alt", "skills"), { recursive: true });
-  fs.writeFileSync(path.join(proj, ".cc-alt", "skills", "echo.md"), "# Echo\n<!-- description: echoes -->\nSay: $ARGS");
-  fs.writeFileSync(path.join(proj, ".cc-alt", "skills", "noop.md"), "do nothing");
+  fs.mkdirSync(path.join(proj, ".slivr", "skills"), { recursive: true });
+  fs.writeFileSync(path.join(proj, ".slivr", "skills", "echo.md"), "# Echo\n<!-- description: echoes -->\nSay: $ARGS");
+  fs.writeFileSync(path.join(proj, ".slivr", "skills", "noop.md"), "do nothing");
   const map = discoverSkills(proj);
   ok("discoverSkills finds project skills", map.has("echo") && map.has("noop"));
   ok("discovered skill has name+description+body", map.get("echo").description === "echoes" && map.get("echo").body === "Say: $ARGS");
@@ -502,7 +502,7 @@ console.log("== 16. jobs + schedule store + duration parsing (no LLM) ==");
   ok("dueJobs returns only past+non-running", due.length === 1 && due[0].id === "a");
 
   // tickScheduler with an injected spawner (no real child process): fires due, reschedules cron,
-  // marks once done. Uses the REAL schedule file under a temp HOME so we don't touch ~/.cc-alt.
+  // marks once done. Uses the REAL schedule file under a temp HOME so we don't touch ~/.slivr.
   const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "cchome-"));
   const realHome = process.env.HOME;
   process.env.HOME = fakeHome;
@@ -571,7 +571,7 @@ console.log("== 18. scheduler service: pidfile + group/prune (no real daemon) ==
   const sched = await import("./src/scheduler.mjs");
   const jobs = await import("./src/jobs.mjs");
 
-  // run pidfile + prune tests under a temp HOME so we don't touch the user's ~/.cc-alt
+  // run pidfile + prune tests under a temp HOME so we don't touch the user's ~/.slivr
   const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ccsched-"));
   const realHome = process.env.HOME;
   process.env.HOME = fakeHome;
@@ -695,20 +695,20 @@ console.log("== 19. robustness: malformed model output + oversized clipping (no 
 
 console.log("== 20. robustness: malformed config/skill/job never crash + web_search usage shape ==");
 {
-  // malformed .cc-alt.json -> loadConfig falls back to defaults, no throw
+  // malformed .slivr.json -> loadConfig falls back to defaults, no throw
   const { loadConfig } = await import("./src/config.mjs");
   const badProj = fs.mkdtempSync(path.join(os.tmpdir(), "ccbad-"));
-  fs.writeFileSync(path.join(badProj, ".cc-alt.json"), "{ this is : not valid json ,,, }");
+  fs.writeFileSync(path.join(badProj, ".slivr.json"), "{ this is : not valid json ,,, }");
   let cfgThrew = false, cfg;
   try { cfg = loadConfig({ cwd: badProj, env: {} }); } catch { cfgThrew = true; }
-  ok("malformed .cc-alt.json does not crash loadConfig", !cfgThrew && cfg && cfg.config.model);
+  ok("malformed .slivr.json does not crash loadConfig", !cfgThrew && cfg && cfg.config.model);
 
   // malformed skill file -> discoverSkills skips it, keeps the good ones
   const { discoverSkills } = await import("./src/skills.mjs");
-  fs.mkdirSync(path.join(badProj, ".cc-alt", "skills"), { recursive: true });
-  fs.writeFileSync(path.join(badProj, ".cc-alt", "skills", "good.md"), "# Good\n<!-- description: fine -->\nDo $ARGS");
+  fs.mkdirSync(path.join(badProj, ".slivr", "skills"), { recursive: true });
+  fs.writeFileSync(path.join(badProj, ".slivr", "skills", "good.md"), "# Good\n<!-- description: fine -->\nDo $ARGS");
   // a directory named like a skill file would make readFileSync throw EISDIR -> must be skipped
-  fs.mkdirSync(path.join(badProj, ".cc-alt", "skills", "broken.md"));
+  fs.mkdirSync(path.join(badProj, ".slivr", "skills", "broken.md"));
   let skillThrew = false, skills;
   try { skills = discoverSkills(badProj); } catch { skillThrew = true; }
   ok("malformed skill entry skipped, good skill kept", !skillThrew && skills.has("good") && !skills.has("broken"));

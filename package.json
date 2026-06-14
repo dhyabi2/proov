@@ -1,14 +1,14 @@
 {
-  "name": "cc-alt",
+  "name": "slivr",
   "version": "0.1.0",
   "type": "module",
-  "description": "A configurable-LLM Claude Code alternative: a coding-agent harness whose compact-edit protocol matches task success at lower session cost than a Claude-Code-style full-rewrite baseline, on the same swappable model.",
+  "description": "Slivr \u2014 a fast, low-cost CLI coding agent with a precise anchor-based edit engine (never re-sends whole files). Provider-agnostic via OpenRouter; MCP, multimodal, plan-mode, parallel orchestration.",
   "bin": {
-    "cc-alt": "bin/cc-alt.mjs"
+    "slivr": "bin/slivr.mjs"
   },
   "scripts": {
     "selftest": "node selftest.mjs",
-    "start": "node bin/cc-alt.mjs",
+    "start": "node bin/slivr.mjs",
     "demo": "node demo.mjs",
     "bench": "node bench/run.mjs"
   },

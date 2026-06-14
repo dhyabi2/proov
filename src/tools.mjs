@@ -26,7 +26,7 @@ export class Tools {
     this.tasks = [];                     // [{ id, subject, status }] maintained via task_write
   }
 
-  // plan (cc-alt): record a numbered list of concrete steps BEFORE mutating the repo. In plan-mode
+  // plan (slivr): record a numbered list of concrete steps BEFORE mutating the repo. In plan-mode
   // the harness blocks all edits/commands until a plan exists and is approved. Calling plan again
   // REPLACES the steps and resets approval (the harness re-asks). Returns the recorded steps.
   plan_tool({ steps } = {}) {
@@ -39,7 +39,7 @@ export class Tools {
     return { ok: true, steps: clean, note: "Plan recorded. In plan-mode it must be approved before edits/commands run." };
   }
 
-  // task_write (cc-alt): replace/update the live task checklist. tasks = [{id?, subject, status}],
+  // task_write (slivr): replace/update the live task checklist. tasks = [{id?, subject, status}],
   // status ∈ pending|in_progress|completed. Items WITH a matching id update in place; items without
   // an id (or a new id) are appended/created. Keep exactly one task in_progress at a time.
   task_write({ tasks } = {}) {
@@ -149,7 +149,7 @@ export class Tools {
     }
   }
 
-  // COMPACT edit protocol (cc-alt). Returns structured repair packet on failure.
+  // COMPACT edit protocol (slivr). Returns structured repair packet on failure.
   edit_file({ path: rel, anchor, replacement, op = "replace" }) {
     const abs = this._resolve(rel);
     if (!fs.existsSync(abs)) return { ok: false, error: "FILE_NOT_FOUND", path: rel };
@@ -160,7 +160,7 @@ export class Tools {
     return { ok: true, tier: res.tier, path: rel };
   }
 
-  // create_file (cc-alt): write a NEW file. Refuses to overwrite an existing one — for changes to
+  // create_file (slivr): write a NEW file. Refuses to overwrite an existing one — for changes to
   // existing files the compact edit_file protocol must be used. This is NOT a full-rewrite escape
   // hatch; it only covers the legitimate "no anchor exists yet" case (creating a file).
   create_file({ path: rel, content }) {
@@ -179,7 +179,7 @@ export class Tools {
     return { ok: true, path: rel, bytes: Buffer.byteLength(content) };
   }
 
-  // edit_files (cc-alt): apply MANY compact edits ATOMICALLY (all-or-nothing) — fewer turns for
+  // edit_files (slivr): apply MANY compact edits ATOMICALLY (all-or-nothing) — fewer turns for
   // multi-file/multi-edit changes. edits = [{path, anchor, replacement, op}]. Edits to the same
   // file apply IN ORDER on the evolving buffer. If ANY edit fails to apply uniquely, NOTHING is
   // written and per-edit repair packets are returned (so the model fixes and resends all edits).
@@ -248,7 +248,7 @@ export class Tools {
   async web_fetch({ url, max = 8000 }) {
     if (!/^https?:\/\//i.test(url || "")) return { ok: false, error: "BAD_URL", hint: "Pass a full http(s) URL." };
     try {
-      const r = await fetch(url, { headers: { "User-Agent": "cc-alt/0.1" }, signal: AbortSignal.timeout(15000) });
+      const r = await fetch(url, { headers: { "User-Agent": "slivr/0.1" }, signal: AbortSignal.timeout(15000) });
       if (!r.ok) return { ok: false, error: `HTTP ${r.status}`, url };
       let text = await r.text();
       text = text.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ")

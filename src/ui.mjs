@@ -75,7 +75,7 @@ export function footer({ turns, totalTokens, cost, model }, palette) {
 export function banner({ model, approval, cwd }, palette) {
   const p = palette;
   return [
-    p.bold("cc-alt") + p.dim(" — interactive coding agent"),
+    p.bold("slivr") + p.dim(" — interactive coding agent"),
     p.gray(`model ${model} · approval ${approval} · ${cwd}`),
     p.gray("type a request, or /help for commands. /exit to quit."),
   ].join("\n");
