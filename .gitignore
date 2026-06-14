@@ -3,3 +3,8 @@ node_modules/
 # npm-link symlink artifact (bin name without .mjs); the real entry is bin/cc-alt.mjs
 /bin/cc-alt
 .cc-alt.json
+
+# secrets / local config
+.env
+.env.local
+.env.*

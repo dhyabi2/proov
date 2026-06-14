@@ -13,14 +13,23 @@ plug in (Claude / GPT / Gemini) over OpenRouter.
 > Cost-neutral-to-slightly-negative on small files — see the honest per-regime breakdown.
 > Full deep-dive — mechanism, measured results, honest scope, and how it was invented: **[INVENTION.md](INVENTION.md)**.
 
+## Install
+
+```bash
+# one line — puts `cc-alt` on your PATH (pure Node >= 18, no build, no deps)
+curl -fsSL https://raw.githubusercontent.com/dhyabi2/cc-alt/main/install.sh | bash
+
+# …or run without installing
+npx github:dhyabi2/cc-alt --help
+
+# …or from a clone
+git clone https://github.com/dhyabi2/cc-alt && cd cc-alt && npm link
+```
+
 ## Quickstart (daily use)
 
 ```bash
-# 1. install (global `cc-alt` command)
-git clone https://github.com/dhyabi2/cc-alt && cd cc-alt
-npm link                         # provides the global `cc-alt` binary (uses the shebang in bin/)
-
-# 2. set your key (preferred: env var)
+# 1. set your key (preferred: env var)
 export OPENROUTER_API_KEY=sk-or-...
 
 # 3. (optional) configure the model + defaults for this repo
