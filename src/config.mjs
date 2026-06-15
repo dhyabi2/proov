@@ -16,9 +16,23 @@ export const DEFAULTS = {
   apiKey: "",
   baseUrl: "https://openrouter.ai/api/v1",
   approval: "edits",
-  maxSteps: 16,
+  // No artificial step cap by default — the agent runs until the task is DONE (or a real safety stop:
+  // repeated-identical-call spin detection, no-progress, abort, or a provider error). Set a finite
+  // --max-steps / maxSteps only if you WANT a hard cap.
+  maxSteps: Infinity,
   maxTokensPerTurn: 4000,
 };
+
+// Parse a maxSteps value: "unlimited"/"none"/"off"/"inf"/0/negative ⇒ Infinity (no cap); a positive
+// number ⇒ that cap. Returns null for junk so the caller can warn.
+export function parseMaxSteps(v) {
+  if (v === Infinity) return Infinity;
+  const s = String(v).trim().toLowerCase();
+  if (s === "unlimited" || s === "none" || s === "off" || s === "inf" || s === "infinity" || s === "0" || s === "-1") return Infinity;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
 
 const KNOWN_KEYS = Object.keys(DEFAULTS);
 
@@ -32,7 +46,7 @@ function fromEnv(env) {
   if (env.SLIVR_API_KEY) out.apiKey = env.SLIVR_API_KEY;
   if (env.SLIVR_BASE_URL) out.baseUrl = env.SLIVR_BASE_URL;
   if (env.SLIVR_APPROVAL) out.approval = env.SLIVR_APPROVAL;
-  if (env.SLIVR_MAX_STEPS) out.maxSteps = Number(env.SLIVR_MAX_STEPS);
+  if (env.SLIVR_MAX_STEPS) { const ms = parseMaxSteps(env.SLIVR_MAX_STEPS); if (ms !== null) out.maxSteps = ms; }
   if (env.SLIVR_MAX_TOKENS) out.maxTokensPerTurn = Number(env.SLIVR_MAX_TOKENS);
   return out;
 }
@@ -47,7 +61,11 @@ function sanitize(obj, source, warn) {
   for (const k of KNOWN_KEYS) {
     if (obj[k] === undefined || obj[k] === null || obj[k] === "") continue;
     let v = obj[k];
-    if (k === "maxSteps" || k === "maxTokensPerTurn") {
+    if (k === "maxSteps") {
+      const ms = parseMaxSteps(v);
+      if (ms === null) { note(`ignored maxSteps=${JSON.stringify(v)} (use a positive number, or "unlimited")`); continue; }
+      v = ms;
+    } else if (k === "maxTokensPerTurn") {
       const num = Number(v);
       if (!Number.isFinite(num) || num <= 0) { note(`ignored ${k}=${JSON.stringify(v)} (must be a positive number)`); continue; }
       v = num;
@@ -131,8 +149,9 @@ export const STARTER_CONFIG = {
   model: "google/gemini-2.5-flash",
   baseUrl: "https://openrouter.ai/api/v1",
   approval: "edits",
-  maxSteps: 16,
+  maxSteps: "unlimited",
   maxTokensPerTurn: 4000,
+  "//maxSteps": 'no step cap by default; set a positive number to cap turns per run (or "unlimited")',
   "//apiKey": "prefer the OPENROUTER_API_KEY env var over storing the key here",
   "//model": "any OpenRouter model id works: anthropic/claude-sonnet-4, openai/gpt-4o, google/gemini-2.5-flash",
   "//mcpServers": "optional: connect external MCP servers; their tools appear as mcp__<server>__<tool>",

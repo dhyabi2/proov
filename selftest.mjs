@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { applyEdit } from "./src/seal.mjs";
 import { Tools } from "./src/tools.mjs";
 import { runLoop } from "./src/loop.mjs";
-import { resolveConfig, DEFAULTS } from "./src/config.mjs";
+import { resolveConfig, DEFAULTS, parseMaxSteps } from "./src/config.mjs";
 import { isDestructive, needsApproval } from "./src/safety.mjs";
 import { unifiedDiff, diffStat, diffLines } from "./src/diff.mjs";
 import { parseCommand } from "./src/repl.mjs";
@@ -789,7 +789,7 @@ console.log("== 21. UX hardening regressions ==");
   fs.writeFileSync(path.join(tmp, "z.js"), "x\n");
   const neverDone = { chat: async () => ({ text: JSON.stringify({ tool: "read_file", args: { path: "z.js" } }), usage: {}, raw: {} }), totals: () => ({ model: "s", calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: 0 }) };
   const r = await runLoop({ provider: neverDone, tools: t, toolMap: { read_file: (a) => t.read_file(a) }, systemPrompt: "s", task: "x", maxSteps: 3 });
-  ok("loop reports step-limit stop", !r.done && /step limit/.test(r.stopped || ""));
+  ok("loop reports step-cap stop when a FINITE --max-steps is set", !r.done && /step cap/.test(r.stopped || ""));
 
   // loop bails out of a stuck no-progress (always non-JSON) loop before the step cap
   const garbage = { chat: async () => ({ text: "not json", usage: {}, raw: {} }), totals: () => ({ model: "s", calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: 0 }) };
@@ -833,10 +833,16 @@ console.log("== 21. UX hardening regressions ==");
   ok("git clean -fdx still blocked", isDestructive("git clean -fdx").blocked === true);
 
   // config surfaces warnings for invalid known values (instead of silently dropping them)
-  const cw = resolveConfig({ local: { approval: "nope", maxSteps: -1 } });
+  const cw = resolveConfig({ local: { approval: "nope", maxSteps: "abc" } });
   ok("config reports invalid approval", cw.warnings.some(w => /approval/.test(w)));
   ok("config reports invalid maxSteps", cw.warnings.some(w => /maxSteps/.test(w)));
   ok("config has no warnings when clean", resolveConfig({ local: { approval: "auto" } }).warnings.length === 0);
+
+  // NO step cap by default; "unlimited"/0/-1 all mean no cap; a positive number is an opt-in cap.
+  ok("maxSteps default is unlimited (no artificial cap)", resolveConfig({}).config.maxSteps === Infinity);
+  ok('parseMaxSteps: "unlimited"/0/-1 → Infinity, positive → that cap, junk → null',
+    parseMaxSteps("unlimited") === Infinity && parseMaxSteps(0) === Infinity && parseMaxSteps(-1) === Infinity && parseMaxSteps(50) === 50 && parseMaxSteps("abc") === null);
+  ok("config: an explicit positive maxSteps is still honored as a cap", resolveConfig({ local: { maxSteps: 25 } }).config.maxSteps === 25);
 
   // approval prompt parsing: yes-to-all / stop verbs (non-TTY defaults to "no")
   const { approvalPrompt } = await import("./src/ui.mjs");

@@ -14,7 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
-import { loadConfig, writeStarterConfig } from "../src/config.mjs";
+import { loadConfig, writeStarterConfig, parseMaxSteps } from "../src/config.mjs";
 import { Session, planGate } from "../src/agent.mjs";
 import { runBaseline } from "../src/baseline.mjs";
 import { startRepl } from "../src/repl.mjs";
@@ -65,7 +65,7 @@ function parseArgs(argv) {
     else if (a === "--prompt" || a === "-p") { [flags.promptTask, i] = val(i, "--prompt"); }
     else if (a === "--verify") { const n = argv[i + 1]; if (n === undefined || (typeof n === "string" && n.startsWith("--"))) flags.verify = true; else { flags.verify = n; i++; } }   // bare --verify = auto-detect the test command
     else if (a === "--repair") { let v; [v, i] = val(i, "--repair"); flags.repair = Number(v); }
-    else if (a === "--max-steps") { let v; [v, i] = val(i, "--max-steps"); flags.maxSteps = Number(v); }
+    else if (a === "--max-steps") { let v; [v, i] = val(i, "--max-steps"); const ms = parseMaxSteps(v); if (ms !== null) flags.maxSteps = ms; }
     else if (a === "--in") { [flags.in, i] = val(i, "--in"); }
     else if (a === "--at") { [flags.at, i] = val(i, "--at"); }
     else if (a === "--cron") { [flags.cron, i] = val(i, "--cron"); }
@@ -83,7 +83,7 @@ function parseArgs(argv) {
     else if (a.startsWith("--approval=")) flags.approval = a.slice(11);
     else if (a.startsWith("--dir=")) flags.dir = a.slice(6);
     else if (a.startsWith("--prompt=")) flags.promptTask = a.slice(9);
-    else if (a.startsWith("--max-steps=")) flags.maxSteps = Number(a.slice(12));
+    else if (a.startsWith("--max-steps=")) { const ms = parseMaxSteps(a.slice(12)); if (ms !== null) flags.maxSteps = ms; }
     else if (a.startsWith("-") && a !== "-") unknown.push(a);   // unrecognized flag -> reported
     else positional.push(a);
   }
@@ -139,7 +139,8 @@ OPTIONS
   --verify "<cmd>"             after the agent finishes, run <cmd>; if it fails, feed the output back
                                and make the agent fix it (verify-and-repair loop)
   --repair <n>                 max repair attempts for --verify (default 3)
-  --max-steps <n>              cap tool-calls per turn
+  --max-steps <n>              OPTIONAL cap on tool-calls per run (default: unlimited —
+                               the agent runs until done or a real safety stop). "unlimited" to clear.
   --in/--at/--cron <v>         scheduling timing for "slivr schedule"
   --every <secs>               scheduler poll interval (default 30)
   --watch                      live-refresh "slivr jobs"
@@ -508,7 +509,8 @@ async function main() {
   if (subcommand === "config") {
     process.stdout.write(p.bold("resolved config") + p.dim("  (precedence: flags > local > home > env > defaults)") + "\n");
     for (const [k, v] of Object.entries(config)) {
-      const shown = k === "apiKey" ? (v ? "****(set)" : "(unset)") : v;
+      const shown = k === "apiKey" ? (v ? "****(set)" : "(unset)")
+        : (k === "maxSteps" && !Number.isFinite(v)) ? "unlimited" : v;
       process.stdout.write(`  ${k.padEnd(16)} ${String(shown).padEnd(40)} ${p.gray("← " + (sources[k] || "default"))}\n`);
     }
     process.stdout.write(p.gray(`  local: ${paths.local}${fs.existsSync(paths.local) ? "" : " (none)"}\n`));
