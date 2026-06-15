@@ -1984,6 +1984,30 @@ console.log("== 53. see_page for WebGL/3D — real runtime error + blank-canvas,
   }
 }
 
+console.log("== 54. dual-model routing — creator creates, editor fixes bugs (Block 32) ==");
+{
+  const script = [
+    { tool: "create_file", args: { path: "a.js", content: "x" } },
+    { tool: "create_file", args: { path: "b.js", content: "y" } },
+    { tool: "edit_file", args: { path: "a.js", anchor: "x", replacement: "X" } },
+    { tool: "edit_file", args: { path: "a.js", anchor: "X", replacement: "XX" } },
+    { tool: "done", args: { summary: "ok" } },
+  ];
+  const run = async (editModel) => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "dm-")); const t = new Tools(d);
+    const used = []; let i = 0;
+    const provider = { model: "CREATOR", chat: async (_m, opts) => { used.push((opts && opts.model) || "CREATOR"); const c = script[i++] || { tool: "done", args: {} }; return { text: JSON.stringify(c), usage: {}, raw: {} }; }, totals: () => ({ model: "CREATOR", calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: 0 }) };
+    await runLoop({ provider, tools: t, toolMap: { create_file: (a) => t.create_file(a), edit_file: (a) => t.edit_file(a) }, systemPrompt: "s", task: "x", maxSteps: 20, editModel });
+    fs.rmSync(d, { recursive: true, force: true });
+    return used;
+  };
+  const dual = await run("EDITOR");
+  ok("dual-model: creation turns use the CREATOR model", dual[0] === "CREATOR" && dual[1] === "CREATOR");
+  ok("dual-model: editing existing code switches to the EDITOR model", dual[3] === "EDITOR");
+  const single = await run(undefined);
+  ok("dual-model: with no editModel set, every turn uses the single model", single.every((m) => m === "CREATOR"));
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n== selftest: ${pass} passed, ${fail} failed ==`);
 process.exit(fail ? 1 : 0);

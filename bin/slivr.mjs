@@ -61,6 +61,8 @@ function parseArgs(argv) {
     else if (a === "--plan") plan = true;
     else if (a === "--auto") { auto = true; flags.approval = "auto"; }
     else if (a === "--model") { [flags.model, i] = val(i, "--model"); }
+    else if (a === "--edit-model") { [flags.editModel, i] = val(i, "--edit-model"); }
+    else if (a.startsWith("--edit-model=")) flags.editModel = a.slice(13);
     else if (a === "--approval") { [flags.approval, i] = val(i, "--approval"); }
     else if (a === "--dir") { [flags.dir, i] = val(i, "--dir"); }
     else if (a === "--prompt" || a === "-p") { [flags.promptTask, i] = val(i, "--prompt"); }
@@ -133,6 +135,8 @@ USAGE
 
 OPTIONS
   --model <id>                 model id (e.g. anthropic/claude-sonnet-4, openai/gpt-4o, google/gemini-2.5-flash)
+  --edit-model <id>            OPTIONAL 2nd model used for EDITING / bug-fixing (the main --model creates
+                               files); the loop switches to it once the agent is editing existing code
   --approval <auto|edits|all>  when to ask before acting (default: edits)
   --auto                       shorthand for --approval auto (no prompts; destructive cmds still blocked)
   --plan                       plan-mode: agent must produce + get approval for a numbered plan before editing
@@ -165,7 +169,7 @@ EXAMPLES
 async function runOneShot(task, dir, config, palette, { auto, plan, verify, repair }) {
   const p = palette;
   const session = new Session(dir, {
-    model: config.model, apiKey: config.apiKey, baseUrl: config.baseUrl,
+    model: config.model, editModel: config.editModel, apiKey: config.apiKey, baseUrl: config.baseUrl,
     maxSteps: config.maxSteps, maxTokensPerTurn: config.maxTokensPerTurn,
     planMode: !!plan,
     notify: (m) => process.stderr.write(p.dim(`  … ${m}\n`)),
@@ -303,7 +307,7 @@ async function runOneShot(task, dir, config, palette, { auto, plan, verify, repa
 async function runOneShotInProcess(task, dir, log) {
   const { config } = loadConfig({});
   const session = new Session(dir, {
-    model: config.model, apiKey: config.apiKey, baseUrl: config.baseUrl,
+    model: config.model, editModel: config.editModel, apiKey: config.apiKey, baseUrl: config.baseUrl,
     maxSteps: config.maxSteps, maxTokensPerTurn: config.maxTokensPerTurn,
   });
   const w = (s) => { try { log.write(s); } catch { /* ignore */ } };
@@ -509,6 +513,7 @@ async function main() {
     process.stdout.write(p.bold("resolved config") + p.dim("  (precedence: flags > local > home > env > defaults)") + "\n");
     for (const [k, v] of Object.entries(config)) {
       const shown = k === "apiKey" ? (v ? "****(set)" : "(unset)")
+        : (k === "editModel" && !v) ? "(none — single model)"
         : (k === "maxSteps" && !Number.isFinite(v)) ? "unlimited" : v;
       process.stdout.write(`  ${k.padEnd(16)} ${String(shown).padEnd(40)} ${p.gray("← " + (sources[k] || "default"))}\n`);
     }
@@ -561,7 +566,7 @@ async function main() {
     if (!fs.existsSync(dir)) { process.stderr.write(`directory not found: ${dir}\n`); return 2; }
 
     const session = new Session(dir, {
-      model: config.model, apiKey: config.apiKey, baseUrl: config.baseUrl,
+      model: config.model, editModel: config.editModel, apiKey: config.apiKey, baseUrl: config.baseUrl,
       maxSteps: config.maxSteps, maxTokensPerTurn: config.maxTokensPerTurn,
     });
     const controlFile = flags.control || path.join(dir, ".slivr", "control.jsonl");

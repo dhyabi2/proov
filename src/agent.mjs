@@ -589,6 +589,7 @@ export class Session {
     this.tools = new Tools(workdir, { ...opts, onExternalUsage: (u) => this.provider.recordExternalUsage(u) });
     this.messages = null; // seeded on first run; persists across turns
     this.maxSteps = opts.maxSteps ?? Infinity;
+    this.editModel = opts.editModel || "";   // optional 2nd model for editing/bug-fixing (creator = model)
     // diff capture: edit tools record { path, before, after } on the session for the UI to read.
     // lastDiff = single-file edits; lastDiffs = the per-file list for a batch edit_files.
     this.lastDiff = null;
@@ -738,6 +739,7 @@ export class Session {
       systemPrompt: this.systemPrompt,
       task,
       maxSteps: this.maxSteps,
+      editModel: this.editModel,
       seedMessages: this.messages || undefined,
       onStep,
       onToolStart,

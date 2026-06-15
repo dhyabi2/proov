@@ -75,7 +75,12 @@ export function reasoningProse(text) {
   return s.slice(0, i).replace(/```\w*/g, "").replace(/\s+/g, " ").trim();
 }
 
-export async function runLoop({ provider, tools, toolMap, systemPrompt, task, maxSteps = Infinity, onStep, onToolStart, beforeTool, seedMessages, signal, verify, maxRepairs = 3, bridge }) {
+export async function runLoop({ provider, tools, toolMap, systemPrompt, task, maxSteps = Infinity, onStep, onToolStart, beforeTool, seedMessages, signal, verify, maxRepairs = 3, bridge, editModel }) {
+  // DUAL-MODEL ROUTING (optional): a CREATOR model (provider.model) builds/creates; an EDITOR model
+  // (editModel) handles editing/bug-fixing. We pick per turn from the most recent mutation: while the
+  // agent is creating files it stays on the creator; once it edits existing code it uses the editor.
+  let editPhase = false;   // false → creator model; true → editor model
+  const EDIT_TOOLS = new Set(["edit_file", "edit_files", "edit_symbol"]);
   const messages = seedMessages && seedMessages.length
     ? seedMessages
     : [{ role: "system", content: systemPrompt }];
@@ -136,7 +141,8 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
     turns++;
     let resp;
     try {
-      resp = await provider.chat(messages, { signal });
+      const turnModel = (editModel && editPhase) ? editModel : undefined;   // undefined → provider's creator model
+      resp = await provider.chat(messages, { signal, model: turnModel });
     } catch (e) {
       if (e.name === "AbortError" || signal?.aborted) { aborted = true; trace.push({ step, aborted: true }); break; }
       // Surface the failure to the caller instead of swallowing it. A bare "NO_OPENROUTER_KEY"
@@ -227,6 +233,8 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
     if ((call.tool === "edit_file" || call.tool === "write_file") && result && result.ok === false) {
       editFailures++;
     }
+    // dual-model phase: editing existing code → editor model next turn; creating a file → creator model.
+    if (editModel) { if (EDIT_TOOLS.has(call.tool)) editPhase = true; else if (call.tool === "create_file") editPhase = false; }
     trace.push({ step, tool: call.tool, ok: result?.ok, tier: result?.tier });
     if (onStep) onStep({ step, tool: call.tool, args: call.args, result, elapsedMs, reasoning });
     if (bridge) bridge.emit("result", { tool: call.tool, ok: result?.ok !== false, note: clip(result?.note || result?.error || "", 300), ms: elapsedMs });
