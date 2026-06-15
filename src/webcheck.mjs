@@ -10,7 +10,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { renderDom } from "./eye.mjs";
+import { renderDom, renderDomGL } from "./eye.mjs";
+
+// Is this a WebGL / Three.js page? Such pages must be checked on the GPU path — on the default
+// --disable-gpu render WebGL fails to init, which (a) reports a BOGUS "Error creating WebGL context"
+// and (b) never runs the real code, hiding the actual runtime error (e.g. an undefined-var TypeError).
+export function isWebGLPage(html) {
+  return /getContext\(\s*['"](?:webgl|webgl2|experimental-webgl)|WebGLRenderer|three(?:\.module|\.min)*\.js|\bTHREE\./i.test(String(html || ""));
+}
 
 const NODE = process.execPath || "node";
 
@@ -72,23 +79,46 @@ export function checkPageJs(htmlAbs, resolveLocal) {
 // SyntaxError/Error/unhandledrejection that static parsing can't. Renders a TEMP copy (never edits the
 // user's file). Returns { ok, errors:[string] }.
 const CAPTURE = `<script>window.__slivrErrs=[];addEventListener('error',function(e){try{__slivrErrs.push((e.message||'error')+(e.filename?(' @'+String(e.filename).split('/').pop()):'')+(e.lineno?(':'+e.lineno):''));}catch(_){}} ,true);addEventListener('unhandledrejection',function(e){try{__slivrErrs.push('unhandledrejection: '+((e.reason&&e.reason.message)||e.reason));}catch(_){}} );</script>`;
-const DUMP = `<script>window.addEventListener('load',function(){setTimeout(function(){var el=document.createElement('pre');el.id='__slivr_errs';el.style.display='none';el.textContent=JSON.stringify(window.__slivrErrs||[]);document.body.appendChild(el);},50);});</script>`;
+// dumper LAST: POLL (async CDN ES-module games create the canvas + throw their loop error well AFTER the
+// 'load' event, so a fixed delay races them). Dump as soon as an error is captured, or once the canvas has
+// existed long enough to settle — capped at maxWait. Records errors AND whether the canvas is blank (a
+// TypeError-in-the-loop / wrong-camera game renders nothing even when no error fires).
+const dumpScript = (maxWait, checkBlank) => `<script>(function(){
+  function blankOf(){if(!${checkBlank})return null;try{var cv=document.querySelector('canvas');if(!cv)return null;var u=cv.toDataURL('image/png');if(u.length<400)return true;var t=document.createElement('canvas');t.width=16;t.height=16;var x=t.getContext('2d');x.drawImage(cv,0,0,16,16);var d=x.getImageData(0,0,16,16).data,same=true;for(var i=4;i<d.length;i+=4){if(Math.abs(d[i]-d[0])+Math.abs(d[i+1]-d[1])+Math.abs(d[i+2]-d[2])>12){same=false;break;}}return same;}catch(_){return null;}}
+  function out(){var el=document.createElement('pre');el.id='__slivr_errs';el.style.display='none';el.textContent=JSON.stringify({errors:window.__slivrErrs||[],blank:blankOf()});document.body.appendChild(el);}
+  var waited=0,canvasSeen=0;
+  function tick(){
+    if((window.__slivrErrs||[]).length){out();return;}            // an error fired → report now
+    if(document.querySelector('canvas')){canvasSeen+=200;if(canvasSeen>=900){out();return;}}  // canvas settled
+    waited+=200;if(waited>=${maxWait}){out();return;}
+    setTimeout(tick,200);
+  }
+  if(document.readyState==='complete')setTimeout(tick,200);else window.addEventListener('load',function(){setTimeout(tick,200);});
+})();</script>`;
 
-export function pageConsoleErrors(htmlAbs) {
-  let html = ""; try { html = fs.readFileSync(htmlAbs, "utf8"); } catch { return { ok: false, errors: [] }; }
-  // capturer FIRST (so it catches later scripts), dumper LAST.
+// Capture runtime console/runtime errors + a blank-canvas signal. For WebGL/Three.js pages, render on the
+// GPU path (so WebGL actually inits and the REAL runtime error surfaces, not a bogus context error).
+export function pageConsoleErrors(htmlAbs, { gl = false } = {}) {
+  let html = ""; try { html = fs.readFileSync(htmlAbs, "utf8"); } catch { return { ok: false, errors: [], blank: null }; }
+  const useGL = gl || isWebGLPage(html);
+  // poll long enough for a CDN Three.js scene to load + run; blank-canvas check only on WebGL pages (a
+  // blank WebGL canvas almost always means a real bug; an incidental 2D canvas may legitimately be undrawn).
+  const DUMP = dumpScript(useGL ? 6000 : 400, useGL);
   let injected = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (h) => h + CAPTURE) : (CAPTURE + html);
   injected = /<\/body>/i.test(injected) ? injected.replace(/<\/body>/i, DUMP + "</body>") : injected + DUMP;
   const dir = path.dirname(htmlAbs);
   const tmp = path.join(dir, `.slivr-webcheck-${process.pid}-${Date.now()}.html`);
   try {
     fs.writeFileSync(tmp, injected);
-    const d = renderDom(tmp);
-    if (!d.ok) return { ok: false, errors: [] };
+    const d = useGL ? renderDomGL(tmp, 14000) : renderDom(tmp);
+    if (!d.ok) return { ok: false, errors: [], blank: null };
     const m = d.dom.match(/<pre id="__slivr_errs"[^>]*>([\s\S]*?)<\/pre>/);
-    let errs = [];
-    if (m) { try { errs = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")); } catch { /* */ } }
-    return { ok: errs.length === 0, errors: errs };
-  } catch { return { ok: false, errors: [] }; }
+    let res = { errors: [], blank: null };
+    if (m) { try { res = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")); } catch { /* */ } }
+    // drop the headless-only bogus "no WebGL context" if it slips through; clean the temp wrapper filename.
+    const errors = (res.errors || []).filter((e) => !/Error creating WebGL context/i.test(e))
+      .map((e) => e.replace(/@\.slivr-\w+-\d+-\d+\.html/g, "@" + path.basename(htmlAbs)));
+    return { ok: errors.length === 0, errors, blank: res.blank };
+  } catch { return { ok: false, errors: [], blank: null }; }
   finally { try { fs.unlinkSync(tmp); } catch { /* */ } }
 }

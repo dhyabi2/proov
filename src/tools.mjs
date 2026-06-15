@@ -426,8 +426,10 @@ export class Tools {
     // leaves the DOM intact (so it "looks fine") but nothing runs → blank page. Surface these FIRST.
     const jsErrors = [];
     try { const jc = checkPageJs(abs, (s) => this._resolve(path.join(path.dirname(rel), s))); for (const e of jc.errors) jsErrors.push(`${e.where}: ${e.message}`); } catch { /* */ }
-    let consoleErrors = [];
-    try { const ce = pageConsoleErrors(abs); consoleErrors = ce.errors || []; } catch { /* */ }
+    let consoleErrors = [], canvasBlank = null;
+    // WebGL/Three.js pages must be checked on the GPU path (else WebGL fails to init in headless and
+    // reports a BOGUS context error while hiding the REAL runtime error, e.g. an undefined-var TypeError).
+    try { const ce = pageConsoleErrors(abs); consoleErrors = ce.errors || []; canvasBlank = ce.blank; } catch { /* */ }
     const allErrors = [...jsErrors.map((e) => "JS SYNTAX — " + e), ...consoleErrors.map((e) => "CONSOLE — " + e)];
 
     const d = renderDom(abs);
@@ -437,8 +439,13 @@ export class Tools {
       return { ok: true, path: rel, errors: allErrors, broken: true, rendered: text.slice(0, 2000),
         note: `THIS PAGE IS BROKEN — ${allErrors.length} error(s) found; the script never ran (that's why it looks blank):\n- ${allErrors.slice(0, 8).join("\n- ")}\nFIX these (open the file:line and correct the syntax), then see_page again. Do NOT declare done while errors remain.` };
     }
-    if (!text) return { ok: true, path: rel, rendered: "", blank: true, note: "the page rendered BLANK (no visible text) and no JS error was detected — the script may not be drawing anything. Verify it actually renders content (a game: use play_game; a canvas scene: see_page visual:true and look)." };
-    return { ok: true, path: rel, rendered: text.slice(0, 4000), note: "no JS/console errors. This is the VISIBLE rendered text (post-JS). Check it reads correctly — e.g. line breaks render as breaks, not a literal \\n. For layout, call see_page with visual:true." };
+    // A canvas/WebGL game with NO error but a blank canvas is still broken (drew nothing / wrong camera).
+    if (canvasBlank === true) {
+      return { ok: true, path: rel, broken: true, blank: true, rendered: text.slice(0, 500),
+        note: "THIS PAGE IS BROKEN — the canvas rendered BLANK (one flat colour, nothing drawn) even though no JS error fired. Common causes: the render loop never runs, the camera looks at nothing, geometry/material missing, or an early return. Look with see_page visual:true, check the scene/camera/render-loop, and fix it. Do NOT declare done on a blank canvas." };
+    }
+    if (!text && canvasBlank !== false) return { ok: true, path: rel, rendered: "", blank: true, note: "the page rendered BLANK (no visible text) and no JS error was detected — the script may not be drawing anything. Verify it actually renders content (a game: use play_game; a canvas scene: see_page visual:true and look)." };
+    return { ok: true, path: rel, rendered: text.slice(0, 4000), note: "no JS/console errors and the canvas drew content. This is the VISIBLE rendered text (post-JS). Check it reads correctly. For layout, call see_page with visual:true." };
   }
 
   // play_game (Block 15): DRIVE a web game headlessly and observe it — the keystone for making real

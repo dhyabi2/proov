@@ -14,7 +14,7 @@ import { runLoop } from "./src/loop.mjs";
 import { findStub } from "./src/blueprint.mjs";
 import { appendJournal, readJournal, resumeSummary } from "./src/journal.mjs";
 import { applyPromptCache, cachedTokensOf } from "./src/provider.mjs";
-import { checkPageJs, extractScripts, nodeCheckCode } from "./src/webcheck.mjs";
+import { checkPageJs, extractScripts, nodeCheckCode, isWebGLPage } from "./src/webcheck.mjs";
 import { resolveConfig, DEFAULTS, parseMaxSteps } from "./src/config.mjs";
 import { isDestructive, needsApproval } from "./src/safety.mjs";
 import { unifiedDiff, diffStat, diffLines } from "./src/diff.mjs";
@@ -1951,6 +1951,36 @@ console.log("== 52. artkit — draw RICH art (closes the richness gap, Block 30)
     ok("artkit: closes a large richness gap vs flat (≥30 points)", ar.richness - af.richness >= 30);
   } else {
     ok("artkit: (no browser installed — live render skipped)", true);
+  }
+}
+
+console.log("== 53. see_page for WebGL/3D — real runtime error + blank-canvas, not a false WebGL error (Block 31) ==");
+{
+  const { findBrowser } = await import("./src/eye.mjs");
+  ok("isWebGLPage: detects Three.js / getContext('webgl') / WebGLRenderer", isWebGLPage("<script>new THREE.WebGLRenderer()</script>") && isWebGLPage("a.getContext('webgl')") && !isWebGLPage("<canvas>2d</canvas>"));
+  if (findBrowser()) {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "gl-"));
+    const t = new Tools(d);
+    // a raw-WebGL game with a RUNTIME bug (undefined var in the loop) — renders blank, no SYNTAX error.
+    // see_page must catch the REAL TypeError via the GPU path, NOT a bogus "no WebGL context".
+    fs.writeFileSync(path.join(d, "broken3d.html"),
+      "<!doctype html><html><body><canvas id=c width=200 height=150></canvas><script>" +
+      "var gl=document.getElementById('c').getContext('webgl',{preserveDrawingBuffer:true});var player;" +
+      "function loop(){gl.clear(gl.COLOR_BUFFER_BIT);player.x+=1;requestAnimationFrame(loop);}" +  // player undefined → throws
+      "loop();</script></body></html>");
+    const b = t.see_page({ path: "broken3d.html" });
+    ok("see_page (WebGL): catches the REAL runtime TypeError, not a false WebGL-context error", b.broken === true && b.errors.some((e) => /TypeError|undefined/.test(e)) && !b.errors.some((e) => /Error creating WebGL context/.test(e)));
+
+    // a WebGL game that loads but draws NOTHING (clears to a flat colour, no geometry) → blank, no error.
+    fs.writeFileSync(path.join(d, "blank3d.html"),
+      "<!doctype html><html><body><canvas id=c width=200 height=150></canvas><script>" +
+      "var gl=document.getElementById('c').getContext('webgl',{preserveDrawingBuffer:true});gl.clearColor(0.1,0.1,0.1,1);" +
+      "function loop(){gl.clear(gl.COLOR_BUFFER_BIT);requestAnimationFrame(loop);}loop();</script></body></html>");
+    const bl = t.see_page({ path: "blank3d.html" });
+    ok("see_page (WebGL): flags a blank canvas (drew nothing) even with no JS error", bl.broken === true && bl.blank === true);
+    fs.rmSync(d, { recursive: true, force: true });
+  } else {
+    ok("see_page (WebGL): (no browser installed — live skipped)", true);
   }
 }
 
