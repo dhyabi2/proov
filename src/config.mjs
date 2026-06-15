@@ -20,6 +20,9 @@ export const DEFAULTS = {
   compress: true,
   // Optional 2nd model for EDITING / bug-fixing (the main `model` creates files). "" = use one model for all.
   editModel: "",
+  // Vision JUDGE model: critiques a built game's render against the request in the done-gate (Block 37).
+  // Must be multimodal. "none"/"" disables. Default: a strong, cheap vision model.
+  verifyModel: "google/gemini-3.5-flash",
   // No artificial step cap by default — the agent runs until the task is DONE (or a real safety stop:
   // repeated-identical-call spin detection, no-progress, abort, or a provider error). Set a finite
   // --max-steps / maxSteps only if you WANT a hard cap.
@@ -47,6 +50,7 @@ function fromEnv(env) {
   if (env.MODEL) out.model = env.MODEL;
   if (env.SLIVR_MODEL) out.model = env.SLIVR_MODEL;
   if (env.SLIVR_EDIT_MODEL) out.editModel = env.SLIVR_EDIT_MODEL;
+  if (env.SLIVR_VERIFY_MODEL) out.verifyModel = env.SLIVR_VERIFY_MODEL;
   if (env.OPENROUTER_API_KEY) out.apiKey = env.OPENROUTER_API_KEY;
   if (env.SLIVR_API_KEY) out.apiKey = env.SLIVR_API_KEY;
   if (env.SLIVR_BASE_URL) out.baseUrl = env.SLIVR_BASE_URL;

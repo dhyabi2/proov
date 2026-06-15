@@ -616,6 +616,9 @@ export class Session {
     this.maxSteps = opts.maxSteps ?? Infinity;
     this.editModel = opts.editModel || "";   // optional 2nd model for editing/bug-fixing (creator = model)
     this.compress = opts.compress !== false;   // rolling context compression (Block 34); default ON
+    // VISION JUDGE (Block 37): a strong multimodal model that critiques a built game's render against the
+    // request in the done-gate (fidelity, not just structure). Default on; "" / "none" disables it.
+    this.verifyModel = opts.verifyModel === undefined ? "google/gemini-3.5-flash" : (/^(|none|off|false)$/i.test(String(opts.verifyModel)) ? "" : opts.verifyModel);
     // diff capture: edit tools record { path, before, after } on the session for the UI to read.
     // lastDiff = single-file edits; lastDiffs = the per-file list for a batch edit_files.
     this.lastDiff = null;
@@ -767,6 +770,7 @@ export class Session {
       maxSteps: this.maxSteps,
       editModel: this.editModel,
       compress: this.compress,
+      verifyModel: this.verifyModel,
       seedMessages: this.messages || undefined,
       onStep,
       onToolStart,

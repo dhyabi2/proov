@@ -128,6 +128,20 @@ export class Tools {
     } catch { return null; }
   }
 
+  // Capture a game's CANVAS (2D + WebGL, via toDataURL) as a base64 PNG data-url, for a vision judge to
+  // critique fidelity-to-request. Returns "data:image/png;base64,…" or null if it couldn't render.
+  _gameCanvasDataURL(rel) {
+    try {
+      const abs = this._resolve(rel);
+      const cap = path.join(os.tmpdir(), `slivr-gameshot-${process.pid}-${Date.now()}.png`);
+      const shot = screenshotWebGL(abs, cap);
+      if (!shot.ok) { try { fs.unlinkSync(cap); } catch { /* */ } return null; }
+      const b64 = fs.readFileSync(cap).toString("base64");
+      try { fs.unlinkSync(cap); } catch { /* */ }
+      return b64 ? "data:image/png;base64," + b64 : null;
+    } catch { return null; }
+  }
+
   _resolve(rel) {
     if (typeof rel !== "string" || !rel) throw new Error("a 'path' string argument is required (you passed none)");
     const abs = path.resolve(this.workdir, rel);

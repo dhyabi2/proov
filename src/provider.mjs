@@ -26,6 +26,7 @@ function loadKey() {
 // If a model is missing we fall back to a conservative default so cost is never silently 0.
 const PRICES = {
   "google/gemini-2.5-flash":   { in: 0.30, out: 2.50 },
+  "google/gemini-3.5-flash":   { in: 0.30, out: 2.50 },
   "anthropic/claude-sonnet-4": { in: 3.00, out: 15.00 },
   "_default":                  { in: 1.00, out: 3.00 },
 };
