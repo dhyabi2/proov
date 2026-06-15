@@ -223,6 +223,11 @@ ASSET STUDIO (look at the art you make, then make it better): most agents emit "
   contrast, shading, and consistency with the rest of the project's art, and refine. (WebGL/shaders are
   NOT capturable by the headless eye, so stick to svg/canvas for anything you need to see.) Once an asset
   looks right, inline it into the game/page (SVG markup, or the canvas draw code / a generated dataURL).
+  RATE THE FINISHED ART: for a game/app where visuals matter, run art_review {render:"index.html"} before
+  done — it scores VISUAL RICHNESS 0–100 (colours / flat-fill % / edges / gradients) and shows you the
+  frame. If it says FLAT PROGRAMMER ART (low richness, high flat%), your sprites are just coloured
+  rectangles — draw the real player/enemies/props with see_asset (organic shapes + procedural texture +
+  shading) and inline them, then re-check. Don't ship blocks when the request implies real artwork.
 
 BUILD BIG, ZERO ABSTRACTION (blueprint-first — for games, apps, or any large multi-part build): do NOT
   one-shot a big build into a thin "basic visualization" that skips the inner parts. Instead, plan the
@@ -379,6 +384,7 @@ export function makeAgent(workdir, opts = {}) {
     compare_regions: (a) => tools.compare_regions(a),
     style_profile: (a) => tools.style_profile(a),
     style_check: (a) => tools.style_check(a),
+    art_review: (a) => tools.art_review(a),
     orbit_scene: (a) => tools.orbit_scene(a),
     world_map: (a) => tools.world_map(a),
     delegate: (a) => delegateSubAgent(a, workdir, opts),
@@ -410,7 +416,7 @@ const SUBAGENT_BRIEF =
 // READ/INFORMATIONAL tools (not edits/commits), de-noised and length-capped.
 const FINDING_TOOLS = new Set([
   "read_file", "list_dir", "grep", "glob", "repo_map", "project_info", "house_style", "find_symbol", "find_refs", "run_command", "web_search",
-  "web_fetch", "view_pdf", "view_image", "see_page", "see_asset", "play_game", "play_levels", "autoplay", "compare_image", "compare_regions", "crop_image", "style_profile", "style_check", "orbit_scene", "world_map", "resume", "blueprint_status", "blueprint_audit", "git_status", "git_diff", "git_log",
+  "web_fetch", "view_pdf", "view_image", "see_page", "see_asset", "play_game", "play_levels", "autoplay", "compare_image", "compare_regions", "crop_image", "style_profile", "style_check", "art_review", "orbit_scene", "world_map", "resume", "blueprint_status", "blueprint_audit", "git_status", "git_diff", "git_log",
 ]);
 export function extractFindings(sub, maxTotal = 2000) {
   const out = [];
@@ -688,6 +694,7 @@ export class Session {
       compare_regions: (a) => t.compare_regions(a),
       style_profile: (a) => t.style_profile(a),
       style_check: (a) => t.style_check(a),
+      art_review: (a) => t.art_review(a),
       orbit_scene: (a) => t.orbit_scene(a),
       world_map: (a) => t.world_map(a),
       delegate: (a) => delegateSubAgent(a, this.workdir, this.opts),

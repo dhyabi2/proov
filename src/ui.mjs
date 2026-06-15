@@ -59,6 +59,7 @@ export function describeStep({ tool, args = {} }) {
     case "crop_image": return `crop_image ${args.src ?? "?"} → ${args.out ?? "?"}`;
     case "style_profile": return `style_profile ${args.target ?? "?"}`;
     case "style_check": return `style_check ${args.render || args.candidate || "?"}`;
+    case "art_review": return `art_review ${args.render || args.candidate || "?"}`;
     case "orbit_scene": return `orbit_scene ${args.path ?? "?"}${Array.isArray(args.angles) ? ` (${args.angles.length} angles)` : ""}`;
     case "world_map": return `world_map ${args.action ?? "show"}${args.name ? " " + args.name : ""}`;
     case "play_game": return `play_game ${args.path ?? "?"}${args.steps ? ` (${args.steps} steps)` : ""}`;
@@ -119,6 +120,7 @@ export function summarizeResult({ tool, args = {}, result, diff, diffs } = {}, d
     case "crop_image": return r.width ? `${r.width}×${r.height}` : "cropped";
     case "style_profile": return Array.isArray(r.palette) ? `${r.palette.length} colors` : "profiled";
     case "style_check": return r.adherence != null ? `${r.adherence}% in-style` : "checked";
+    case "art_review": return r.richness != null ? `richness ${r.richness}/100${r.richness < 35 ? " — flat!" : ""}` : "reviewed";
     case "orbit_scene": return r.responds != null ? `${r.views} views · ${r.responds ? "real 3D" : "flat!"}` : "orbited";
     case "world_map": return r.coverage ? `${r.coverage.regions} regions` : (r.map ? "map" : "ok");
     case "play_game": return r.played ? `played${Array.isArray(r.snapshots) ? ` ${r.snapshots.length} snaps` : ""}` : "no contract";

@@ -308,3 +308,55 @@ export function styleAdherence(anchorProfile, assetAbs) {
 }
 
 export { hex as hexColor };
+
+// --- Art critic (Block 29): rate VISUAL RICHNESS so "programmer art" (flat coloured rectangles) is
+// flagged, not shipped. Deterministic, in-Chrome pixel analysis: distinct colours, flat-fill ratio,
+// edge/detail density, and smooth-gradient presence → a 0–100 richness score + a verdict. The agent
+// still LOOKS at the image (the real judge); this gives an objective nudge + closes the "blobs" gap.
+function artHtml(srcUrl) {
+  return `<!doctype html><html><body style="margin:0"><img id="s" src="${srcUrl}"><pre id="__slivr_art" style="display:none"></pre>
+<script>
+function out(o){document.getElementById('__slivr_art').textContent=JSON.stringify(o);}
+window.addEventListener('load',function(){setTimeout(function(){try{
+ var s=document.getElementById('s');if(!s.naturalWidth){out({error:'SRC_LOAD_FAILED'});return;}
+ var W=Math.min(200,s.naturalWidth),H=Math.round(W*(s.naturalHeight/s.naturalWidth))||W;
+ var cv=document.createElement('canvas');cv.width=W;cv.height=H;var x=cv.getContext('2d');x.drawImage(s,0,0,W,H);
+ var d=x.getImageData(0,0,W,H).data;
+ var colors={},flat=0,edge=0,grad=0,n=0;
+ function at(px,py){var p=(py*W+px)*4;return [d[p],d[p+1],d[p+2]];}
+ for(var y=0;y<H-1;y++){for(var px=0;px<W-1;px++){
+   var c=at(px,y),r=at(px+1,y),dn=at(px,y+1);
+   colors[((c[0]>>4)<<8)|((c[1]>>4)<<4)|(c[2]>>4)]=1;
+   var dr=(Math.abs(c[0]-r[0])+Math.abs(c[1]-r[1])+Math.abs(c[2]-r[2]));
+   var dd=(Math.abs(c[0]-dn[0])+Math.abs(c[1]-dn[1])+Math.abs(c[2]-dn[2]));
+   var mx=Math.max(dr,dd);
+   if(mx<=4)flat++; else if(mx>60)edge++; else grad++;
+   n++;
+ }}
+ var distinct=Object.keys(colors).length;
+ var flatR=n?flat/n:0,edgeR=n?edge/n:0,gradR=n?grad/n:0;
+ // richness: many colours + real edges + smooth gradients, penalised by huge flat fills.
+ var colScore=Math.min(1,distinct/120), edgeScore=Math.min(1,edgeR/0.12), gradScore=Math.min(1,gradR/0.25);
+ var richness=Math.max(0,Math.round((colScore*0.35+edgeScore*0.3+gradScore*0.2+(1-flatR)*0.15)*100));
+ out({ok:true,richness:richness,colors:distinct,flatPct:Math.round(flatR*100),edgePct:Math.round(edgeR*100),gradientPct:Math.round(gradR*100)});
+}catch(e){out({error:String(e&&e.message||e)});}},40);});
+</script></body></html>`;
+}
+
+// Rate an image's visual richness. Returns { ok, richness, colors, flatPct, edgePct, gradientPct } | err.
+export function artReview(imgAbs) {
+  if (!fs.existsSync(imgAbs)) return { ok: false, error: "IMG_NOT_FOUND" };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "slivr-art-"));
+  const file = path.join(dir, "art.html");
+  try {
+    fs.writeFileSync(file, artHtml(dataUrl(imgAbs)));
+    const dom = renderDom(file);
+    if (!dom.ok) return { ok: false, error: dom.error };
+    const m = dom.dom.match(/<pre id="__slivr_art"[^>]*>([\s\S]*?)<\/pre>/);
+    let res = null;
+    if (m) { try { res = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")); } catch { /* */ } }
+    if (!res || res.error) return { ok: false, error: (res && res.error) || "ART_PARSE_FAILED" };
+    return { ok: true, ...res };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+  finally { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ } }
+}

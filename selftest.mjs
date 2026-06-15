@@ -160,6 +160,8 @@ console.log("== 5. destructive-command blocklist ==");
   ok("auto never prompts", needsApproval("run_command", "auto") === false && needsApproval("edit_file", "auto") === false);
   ok("edits prompts edits+cmds", needsApproval("edit_file", "edits") && needsApproval("run_command", "edits"));
   ok("edits does NOT prompt reads", needsApproval("read_file", "edits") === false);
+  ok("edits does NOT prompt create_file (new files are additive/sandboxed)", needsApproval("create_file", "edits") === false);
+  ok("edits STILL prompts edits to existing files", needsApproval("edit_file", "edits") === true);
   ok("all prompts edits+cmds", needsApproval("create_file", "all") && needsApproval("run_command", "all"));
 }
 
@@ -1895,6 +1897,32 @@ console.log("== 50. denial-storm stops cleanly (non-interactive fix, Block 28) =
   const denyAll = async () => ({ deny: true, reason: "approval required" });
   const r = await runLoop({ provider: prov, tools: t, toolMap: { create_file: (a) => t.create_file(a) }, systemPrompt: "s", task: "x", maxSteps: 40, beforeTool: denyAll });
   ok("denial storm: stops cleanly instead of looping to the budget", !r.done && /DENIED|can't make progress/.test(r.stopped || "") && r.turns < 12);
+}
+
+console.log("== 51. art_review — rate visual richness, catch programmer art (Block 29) ==");
+{
+  const { renderAsset } = await import("./src/asset.mjs");
+  const { findBrowser } = await import("./src/eye.mjs");
+  const t = new Tools(tmp);
+  ok("art_review: requires input", t.art_review({}).error === "NO_INPUT");
+  if (findBrowser()) {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "art-"));
+    const tt = new Tools(d);
+    // FLAT programmer-art: solid rectangles on a flat field
+    const flat = renderAsset({ canvas: "ctx.fillStyle='#7ec8f0';ctx.fillRect(0,0,W,H);ctx.fillStyle='#5fa84f';ctx.fillRect(0,180,W,76);ctx.fillStyle='#d94b3b';ctx.fillRect(40,150,40,40);", width: 320, height: 256, bg: "#7ec8f0" });
+    fs.writeFileSync(path.join(d, "flat.png"), Buffer.from(flat.dataUrl.split(",")[1], "base64"));
+    // RICH: procedural fbm texture with gradients + detail
+    const rich = renderAsset({ canvas: "for(var y=0;y<H;y++){for(var x=0;x<W;x++){var n=fbm(x/18,y/18,5),m=fbm(x/6+10,y/6,4);ctx.fillStyle='rgb('+((n*200)|0)+','+((m*160)|0)+','+((n*120+m*60)|0)+')';ctx.fillRect(x,y,1,1);}}", width: 320, height: 256 });
+    fs.writeFileSync(path.join(d, "rich.png"), Buffer.from(rich.dataUrl.split(",")[1], "base64"));
+
+    const rf = tt.art_review({ candidate: "flat.png" });
+    const rr = tt.art_review({ candidate: "rich.png" });
+    ok("art_review: flat rectangles → low richness + high flat% + a 'programmer art' verdict + image", rf.ok && rf.richness < 40 && rf.flatPct > 70 && /PROGRAMMER ART/.test(rf.note) && !!rf.multimodal);
+    ok("art_review: a textured/gradient image → much higher richness", rr.ok && rr.richness > rf.richness + 20 && rr.gradientPct > rf.gradientPct);
+    fs.rmSync(d, { recursive: true, force: true });
+  } else {
+    ok("art_review: (no browser installed — live skipped)", true);
+  }
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });

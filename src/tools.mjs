@@ -24,7 +24,7 @@ import { renderAsset } from "./asset.mjs";
 import * as bp from "./blueprint.mjs";
 import { resumeSummary, appendJournal } from "./journal.mjs";
 import { checkPageJs, pageConsoleErrors } from "./webcheck.mjs";
-import { compareImages, cropImage, compareRegions, styleProfile, styleAdherence, hexColor } from "./match.mjs";
+import { compareImages, cropImage, compareRegions, styleProfile, styleAdherence, hexColor, artReview } from "./match.mjs";
 import { orbitScene } from "./scene3d.mjs";
 import * as world from "./world.mjs";
 
@@ -766,6 +766,35 @@ export class Tools {
       const verdict = r.adherence >= 85 ? "consistent with the world" : r.adherence >= 70 ? "borderline — nudge its palette toward the anchor" : "off-style — rework its colours/tone to match the picture's world";
       const out = { ok: true, adherence: r.adherence, palette: r.palette, tone: r.tone, brightnessDelta: r.brightnessDelta, saturationDelta: r.saturationDelta, contrastDelta: r.contrastDelta, note: `${r.adherence}% style-consistent with the picture's world — ${verdict}. Look at the composite: this asset's palette should live in the same family as the anchor.` };
       if (r.dataUrl) out.multimodal = { kind: "image", path: "style", mime: "image/png", dataUrl: r.dataUrl };
+      return out;
+    } finally { if (tmpShot) { try { fs.unlinkSync(tmpShot); } catch { /* */ } } }
+  }
+
+  // art_review (Block 29 — don't ship programmer art): rate the VISUAL RICHNESS of a render/image so flat
+  // coloured-rectangle "programmer art" is caught, not shipped. Returns a 0–100 richness score + colour
+  // count / flat-fill % / edge % / gradient %, and attaches the image so you LOOK. Pass render (an
+  // html/page to screenshot) or candidate (an image). Low richness + high flat% = blobs → use see_asset.
+  art_review({ render, candidate } = {}) {
+    if (!render && !candidate) return { ok: false, error: "NO_INPUT", hint: "pass render: an html/page path, OR candidate: an image path" };
+    const readable = (rel) => { try { const a = this._resolve(rel); if (fs.existsSync(a)) return a; } catch { /* */ } if (path.isAbsolute(rel) && fs.existsSync(rel)) return rel; return null; };
+    let imgAbs, tmpShot = null;
+    if (render) {
+      let pageAbs; try { pageAbs = this._resolve(render); } catch (e) { return { ok: false, error: e.message }; }
+      if (!fs.existsSync(pageAbs)) return { ok: false, error: "RENDER_NOT_FOUND", path: render };
+      tmpShot = path.join(os.tmpdir(), `slivr-art-${process.pid}-${Date.now()}.png`);
+      const shot = renderShot(pageAbs, tmpShot, { width: 800, height: 500 });
+      if (!shot.ok) return { ok: false, error: "RENDER_SCREENSHOT_FAILED", hint: shot.error };
+      imgAbs = tmpShot;
+    } else { imgAbs = readable(candidate); if (!imgAbs) return { ok: false, error: "CANDIDATE_NOT_FOUND", path: candidate }; }
+    try {
+      const a = artReview(imgAbs);
+      if (!a.ok) return { ok: false, error: a.error, hint: "couldn't analyze — is Chrome installed and the input a real image?" };
+      const verdict = a.richness >= 60 ? "visually rich — real detail/shading."
+        : a.richness >= 35 ? "some detail, but it could be richer — add texture/shading/outlines."
+        : `looks like FLAT PROGRAMMER ART (${a.flatPct}% flat fill, ${a.gradientPct}% gradients, ${a.colors} colours). If you intended detailed sprites/textures, draw them with see_asset (organic shapes + procedural texture) and re-check; if a flat/minimalist style is intentional, that's fine.`;
+      const out = { ok: true, richness: a.richness, colors: a.colors, flatPct: a.flatPct, edgePct: a.edgePct, gradientPct: a.gradientPct,
+        note: `Visual richness ${a.richness}/100 — ${verdict} Look at the image: are the player/enemies/props real little drawings, or just coloured rectangles?` };
+      try { out.multimodal = { kind: "image", path: "art", mime: "image/png", dataUrl: "data:image/png;base64," + fs.readFileSync(imgAbs).toString("base64") }; } catch { /* */ }
       return out;
     } finally { if (tmpShot) { try { fs.unlinkSync(tmpShot); } catch { /* */ } } }
   }
