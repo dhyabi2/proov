@@ -22,6 +22,7 @@ import { detectStyle, styleBrief } from "./style.mjs";
 import { playGame, playLevels, autoPlay, extractLevels } from "./gameharness.mjs";
 import { parse as parseLevel, certify as certifyLevel, recheck as recheckLevel } from "./levelcert.mjs";
 import { startServer, stopServer, listServers } from "./server.mjs";
+import { analyzeStructure, wantsMinimal } from "./structure.mjs";
 import { isDestructive } from "./safety.mjs";
 import { renderAsset } from "./asset.mjs";
 import * as bp from "./blueprint.mjs";
@@ -266,6 +267,90 @@ export class Tools {
         stderr: (e.stderr || e.message || "").toString().slice(-2000),
         exitCode: e.status ?? 1,
       };
+    }
+  }
+
+  // Detect the package manager from a lockfile (default npm).
+  _detectPackageManager() {
+    try { if (fs.existsSync(this._resolve("pnpm-lock.yaml"))) return "pnpm"; } catch { /* */ }
+    try { if (fs.existsSync(this._resolve("yarn.lock"))) return "yarn"; } catch { /* */ }
+    return "npm";
+  }
+
+  // Build the install command. --ignore-scripts by DEFAULT (a dependency's install/postinstall script is
+  // arbitrary code execution); allowScripts:true opts back in (needed for native/build-step packages).
+  _installCommand(mgr, { allowScripts = false, args = "" } = {}) {
+    const ig = allowScripts ? "" : " --ignore-scripts";
+    const extra = args ? " " + args : "";
+    if (mgr === "pnpm") return `pnpm install${ig}${extra}`;
+    if (mgr === "yarn") return `yarn install${ig}${extra}`;
+    return `npm install${ig}${extra}`;
+  }
+
+  // Install a Node app's dependencies (approval-gated — runs npm/pnpm/yarn, which may execute install
+  // scripts). --ignore-scripts unless allowScripts:true. Longer timeout than run_command (installs are slow).
+  install_deps({ manager, allowScripts = false, timeoutMs = 180000, args } = {}) {
+    let pkg; try { pkg = this._resolve("package.json"); } catch (e) { return { ok: false, error: e.message }; }
+    if (!fs.existsSync(pkg)) return { ok: false, error: "NO_PACKAGE_JSON", hint: "create a package.json with your dependencies first, then install_deps" };
+    const mgr = manager || this._detectPackageManager();
+    const command = this._installCommand(mgr, { allowScripts, args });
+    try {
+      const out = execSync(command, { cwd: this.workdir, timeout: timeoutMs, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], shell: "/bin/bash" });
+      return { ok: true, manager: mgr, command, stdout: out.slice(-3000) };
+    } catch (e) {
+      return { ok: false, manager: mgr, command, stderr: (e.stderr || e.message || "").toString().slice(-3000), exitCode: e.status ?? 1, hint: allowScripts ? undefined : "if a dependency needs its build/install scripts, retry install_deps with allowScripts:true" };
+    }
+  }
+
+  // The command that STARTS this project's server, or null. Prefers a direct `node <entry>` for an entry
+  // file that clearly listens; falls back to an npm start/dev script. Used to verify a SERVED game.
+  _serverStartCommand() {
+    for (const f of ["server.js", "app.js", "index.js", "main.js", "src/server.js", "src/index.js", "src/app.js"]) {
+      try {
+        const abs = this._resolve(f);
+        if (fs.existsSync(abs) && /\.listen\s*\(|createServer|express\s*\(|new\s+Koa|Fastify|process\.env\.PORT/.test(fs.readFileSync(abs, "utf8"))) return `node ${f}`;
+      } catch { /* */ }
+    }
+    try {
+      const s = (JSON.parse(fs.readFileSync(this._resolve("package.json"), "utf8")).scripts) || {};
+      if (s.start) return "npm start";
+      if (s.dev) return "npm run dev";
+    } catch { /* */ }
+    return null;
+  }
+
+  // DONE-GATE helper for SERVED games (Block 41): when there's no static game file but the project serves
+  // one, start the server (or reuse a running one), fetch the entry HTML, and verify it over HTTP — broken
+  // check (see_page {url}) + production-structure check on the served HTML. Returns { ran, problem }.
+  // Graceful: a project that isn't a startable server, or whose served page isn't a game, → { ran:false }.
+  async _verifyServedGame({ task } = {}) {
+    let url = null, startedPid = null;
+    const running = listServers();
+    if (running.length) url = running[0].url;
+    else {
+      const cmd = this._serverStartCommand();
+      if (!cmd) return { ran: false };
+      const s = await startServer({ command: cmd, cwd: this.workdir, readyTimeoutMs: 12000 });
+      if (!s.ok) return { ran: false };
+      url = s.url; startedPid = s.pid;
+    }
+    try {
+      const res = await this.http_request({ url, timeoutMs: 8000 });
+      const html = res && res.ok ? res.body : "";
+      const isGame = /<canvas/i.test(html) && /(requestAnimationFrame|slivrSim|getContext\s*\()/i.test(html);
+      if (!html || !isGame) return { ran: false };
+      const sp = this.see_page({ url });
+      if (sp && sp.broken) return { ran: true, problem: `the served page at ${url} is BROKEN: ${(sp.errors || []).slice(0, 3).join("; ")}` };
+      if (!wantsMinimal(task)) {
+        const st = analyzeStructure(html, task);
+        if (!st.pass) {
+          const punch = st.missing.slice(0, 9).map((m) => "  ✗ " + m.label + (m.anti ? " (placeholder / wrong primitive)" : "")).join("\n");
+          return { ran: true, problem: `the SERVED game's STRUCTURE is only ~${st.requiredScore}% of a production game — ${st.zeroCategories.length} whole layer${st.zeroCategories.length === 1 ? "" : "s"} missing (${st.zeroCategories.join(", ") || "—"}):\n${punch}` };
+        }
+      }
+      return { ran: true, problem: null };
+    } finally {
+      if (startedPid) stopServer(startedPid);
     }
   }
 

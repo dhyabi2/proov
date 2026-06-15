@@ -2245,6 +2245,53 @@ console.log("== 62. node servers — run a generated app on a URL:port, verify o
   fs.rmSync(d, { recursive: true, force: true });
 }
 
+console.log("== 63. node deps + served-game done-gate — install (approval) + verify a served app (Block 41) ==");
+{
+  const { needsApproval } = await import("./src/safety.mjs");
+
+  // install_deps: validation + pure command/manager helpers (the real install needs network, not tested).
+  const di = fs.mkdtempSync(path.join(os.tmpdir(), "dep-")); const ti = new Tools(di);
+  ok("install_deps: NO_PACKAGE_JSON when there's no package.json", ti.install_deps({}).error === "NO_PACKAGE_JSON");
+  ok("install_deps: --ignore-scripts by default, allowScripts opts in", ti._installCommand("npm", {}) === "npm install --ignore-scripts" && ti._installCommand("npm", { allowScripts: true }) === "npm install");
+  fs.writeFileSync(path.join(di, "pnpm-lock.yaml"), "");
+  const pnpmDetected = ti._detectPackageManager() === "pnpm";
+  fs.rmSync(path.join(di, "pnpm-lock.yaml")); fs.writeFileSync(path.join(di, "yarn.lock"), "");
+  ok("install_deps: detects pnpm/yarn/npm from the lockfile", pnpmDetected && ti._detectPackageManager() === "yarn");
+
+  // approval: install_deps + start_server are approval-gated like run_command (never silent in edits/all).
+  ok("approval: install_deps + start_server need approval (edits), none in auto", needsApproval("install_deps", "edits") === true && needsApproval("start_server", "edits") === true && needsApproval("install_deps", "auto") === false && needsApproval("start_server", "all") === true);
+
+  // _serverStartCommand: detect a node entry that listens, or an npm script.
+  const ds = fs.mkdtempSync(path.join(os.tmpdir(), "ssc-")); const ts = new Tools(ds);
+  ok("server: _serverStartCommand finds no command on an empty dir", ts._serverStartCommand() === null);
+  fs.writeFileSync(path.join(ds, "server.js"), 'require("http").createServer(()=>{}).listen(process.env.PORT)');
+  ok("server: _serverStartCommand detects a node server entry", ts._serverStartCommand() === "node server.js");
+
+  // SERVED done-gate: a Node app that SERVES a game gets verified over HTTP (no static index.html needed).
+  const serve = (body) => `const http=require("http");http.createServer((q,r)=>{r.writeHead(200,{"content-type":"text/html"});r.end(${JSON.stringify("<html><body>" + body + "</body></html>")});}).listen(process.env.PORT||3000);`;
+  const skeletonPage = '<canvas></canvas><script>const s=new THREE.Scene();const box=new THREE.Mesh(new THREE.BoxGeometry(1,1,1));function animate(){requestAnimationFrame(animate);}animate();</script>';
+  const dk = fs.mkdtempSync(path.join(os.tmpdir(), "svk-")); const tk = new Tools(dk);
+  fs.writeFileSync(path.join(dk, "server.js"), serve(skeletonPage));
+  const svk = await tk._verifyServedGame({ task: "make a 3d game" });
+  ok("served gate: a served SKELETON game is flagged (structure over HTTP)", svk.ran === true && /STRUCTURE/.test(svk.problem || ""));
+  const dc = fs.mkdtempSync(path.join(os.tmpdir(), "svc-")); const tc = new Tools(dc);
+  fs.writeFileSync(path.join(dc, "server.js"), serve(COMPLETE_GAME.replace(/^[\s\S]*?<body>/i, "").replace(/<\/body>[\s\S]*$/i, "")));
+  const svc = await tc._verifyServedGame({ task: "make a platformer" });
+  ok("served gate: a served COMPLETE game passes (no false block)", svc.ran === true && svc.problem === null);
+  const dn = fs.mkdtempSync(path.join(os.tmpdir(), "svn-")); const tn = new Tools(dn);
+  ok("served gate: a non-server project is not gated", (await tn._verifyServedGame({ task: "x" })).ran === false);
+
+  // full done-gate via runLoop: a server project serving a skeleton is pushed back at done.
+  const mkProv = (script) => { let i = 0; return { model: "m", chat: async () => ({ text: JSON.stringify(script[i++] || { tool: "done", args: {} }), usage: {}, raw: {} }), totals: () => ({ model: "m", calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: 0 }) }; };
+  const dg = fs.mkdtempSync(path.join(os.tmpdir(), "svg-")); const tg = new Tools(dg);
+  fs.writeFileSync(path.join(dg, "server.js"), serve(skeletonPage));
+  const rg = await runLoop({ provider: mkProv([{ tool: "done", args: {} }, { tool: "done", args: {} }]), tools: tg, toolMap: {}, systemPrompt: "s", task: "make a 3d game served on a url", maxSteps: 8 });
+  ok("served gate: the done-gate pushes back a served skeleton game", rg.trace.some((x) => x.servedGate) && rg.done);
+
+  const { stopAllServers } = await import("./src/server.mjs"); stopAllServers();
+  for (const x of [di, ds, dk, dc, dn, dg]) fs.rmSync(x, { recursive: true, force: true });
+}
+
 console.log("== 56. rolling context compression — elide old reconstructable results (Block 34) ==");
 {
   const big = (n) => "x".repeat(n);

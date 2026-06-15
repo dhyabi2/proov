@@ -304,6 +304,22 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
             trace.push({ step, gameGate: clip(problem, 80) });
             continue;
           }
+        } else if (typeof tools._verifyServedGame === "function") {
+          // SERVED GAME (Block 41): no static index.html, but the project may SERVE a game over HTTP (a
+          // Node app). Start it, fetch the entry HTML, and verify it over the URL (broken check + the
+          // production-structure contract). Opt-in by being a startable server → never blocks non-server
+          // projects; the harness-only checks (autoplay/level-cert/WebGL capture) stay file-only for now.
+          let sv = null;
+          try { sv = await tools._verifyServedGame({ task }); } catch { sv = null; }
+          if (sv && sv.ran) {
+            gameGateDone = true;
+            if (sv.problem) {
+              noProgress = 0;
+              messages.push({ role: "user", content: `You called done, but the SERVED app isn't finished to the bar: ${sv.problem}\nFix it for real, then restart and RE-VERIFY over the URL (start_server, see_page {url}, http_request), THEN call done.` });
+              trace.push({ step, servedGate: clip(sv.problem, 80) });
+              continue;
+            }
+          }
         }
       }
       summary = call.args?.summary || "";

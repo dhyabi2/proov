@@ -206,7 +206,7 @@ export async function startRepl({ workdir, config, palette } = {}) {
   // beforeTool: enforce hard blocklist + plan-gate + approval prompts.
   const beforeTool = async ({ tool, args }) => {
     if (stopTurn) return { deny: true, reason: "user stopped this turn; call done." };
-    if (tool === "run_command") {
+    if (tool === "run_command" || tool === "start_server") {
       const verdict = isDestructive(args.command || "");
       if (verdict.blocked) {
         process.stdout.write(p.red(`  ⛔ blocked: ${args.command}\n`) + p.dim(`     (${verdict.why})\n`));
@@ -224,6 +224,8 @@ export async function startRepl({ workdir, config, palette } = {}) {
       // Show the action with a diff preview wherever we can compute one.
       let preview = "";
       if (tool === "run_command") preview = p.yellow(`  run: ${args.command}`);
+      else if (tool === "install_deps") preview = p.yellow(`  install dependencies` + (args.allowScripts ? " (allowing install scripts ⚠)" : " (--ignore-scripts)"));
+      else if (tool === "start_server") preview = p.yellow(`  start server: ${args.command}`);
       else if (tool === "edit_file") {
         const cur = session._readSafe(args.path).content ?? "";
         const next = previewEdit(cur, args);
