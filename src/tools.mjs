@@ -16,6 +16,7 @@ import { localPdfText } from "./pdftext.mjs";
 import { costUSD } from "./provider.mjs";
 import { buildSymbolIndex, findSymbol, findReferences, repoOverview, langOf, symbolSpan } from "./repomap.mjs";
 import { renderDom, renderShot, visibleText } from "./eye.mjs";
+import { detectCommands, describeCommands } from "./project.mjs";
 
 // Re-indent a replacement block to a target base indent (strip its own common indent, prepend target).
 function reindentBlock(block, indent) {
@@ -290,6 +291,13 @@ export class Tools {
       note: `whole-repo memory: ${idx.symbols.length} symbols across ${st.total ?? idx.allFiles.length} files (persistent + incremental: ${st.reused ?? 0} reused / ${st.parsed ?? 0} re-parsed this build). Query it free with find_symbol / find_refs.`,
       map: repoOverview(idx),
     };
+  }
+
+  // project_info (gap #1): auto-detect how to TEST / RUN / BUILD this project (any ecosystem) so you
+  // can verify your change or run it WITHOUT being told the command. Pure manifest inspection, no cost.
+  project_info() {
+    const d = detectCommands(this.workdir);
+    return { ok: true, ecosystem: d.ecosystem, test: d.test?.cmd || null, run: d.run?.cmd || null, build: d.build?.cmd || null, evidence: d.evidence, note: describeCommands(d) };
   }
 
   // find_symbol: jump straight to a definition (file:line + signature) instead of grepping through

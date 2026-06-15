@@ -21,6 +21,7 @@ import { startRepl } from "../src/repl.mjs";
 import { makePalette, colorEnabled, stepLine, footer, renderPlan, renderTasks, planPrompt, readPlanEdit } from "../src/ui.mjs";
 import { renderDiff, diffStat } from "../src/diff.mjs";
 import { runHintLine } from "../src/run_hint.mjs";
+import { detectCommands } from "../src/project.mjs";
 import { isDestructive, needsApproval } from "../src/safety.mjs";
 import { connectAll, closeAll } from "../src/mcp.mjs";
 import { listSkills, renderSkill } from "../src/skills.mjs";
@@ -59,7 +60,7 @@ function parseArgs(argv) {
     else if (a === "--approval") { [flags.approval, i] = val(i, "--approval"); }
     else if (a === "--dir") { [flags.dir, i] = val(i, "--dir"); }
     else if (a === "--prompt" || a === "-p") { [flags.promptTask, i] = val(i, "--prompt"); }
-    else if (a === "--verify") { [flags.verify, i] = val(i, "--verify"); }
+    else if (a === "--verify") { const n = argv[i + 1]; if (n === undefined || (typeof n === "string" && n.startsWith("--"))) flags.verify = true; else { flags.verify = n; i++; } }   // bare --verify = auto-detect the test command
     else if (a === "--repair") { let v; [v, i] = val(i, "--repair"); flags.repair = Number(v); }
     else if (a === "--max-steps") { let v; [v, i] = val(i, "--max-steps"); flags.maxSteps = Number(v); }
     else if (a === "--in") { [flags.in, i] = val(i, "--in"); }
@@ -649,7 +650,9 @@ async function main() {
   }
   const task = flags.promptTask || subcommand;
   const hasTask = !!task;
-  const dir = flags.dir || (subcommand && !flags.promptTask ? positional[1] : undefined) || process.cwd();
+  // dir: --dir wins; with -p the task came from the flag so the FIRST positional is the dir; with a
+  // positional task ("slivr '<task>' <dir>") the SECOND positional is the dir; else cwd.
+  const dir = flags.dir || (flags.promptTask ? positional[0] : (subcommand ? positional[1] : undefined)) || process.cwd();
   if (!fs.existsSync(dir)) { process.stderr.write(p.red(`directory not found: ${dir}\n`)); return 2; }
 
   if (hasTask) {
@@ -659,7 +662,13 @@ async function main() {
       process.stderr.write(`\ndone=${res.done} turns=${res.turns} ${JSON.stringify(res.totals)}\n`);
       return res.done ? 0 : 1;
     }
-    return runOneShot(task, dir, config, palette, { auto, plan, verify: flags.verify, repair: flags.repair });
+    // bare --verify → auto-detect the project's test command (gap #1) so verify-repair needs no flag.
+    let verify = flags.verify;
+    if (verify === true) {
+      verify = detectCommands(dir).test?.cmd || null;
+      process.stderr.write(verify ? p.dim(`auto-verify: ${verify}\n`) : p.yellow("--verify: no test command detected for this project; skipping verification\n"));
+    }
+    return runOneShot(task, dir, config, palette, { auto, plan, verify, repair: flags.repair });
   }
 
   // REPL

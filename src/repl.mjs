@@ -18,6 +18,7 @@ import { listSkills, renderSkill, discoverSkills } from "./skills.mjs";
 import { spawn } from "node:child_process";
 import { listJobs } from "./jobs.mjs";
 import { runHintLine, detectRunHint, findArtifact, osOpen, launchVerb, isDemonstrateRequest } from "./run_hint.mjs";
+import { detectCommands } from "./project.mjs";
 
 // Persist an API key to ~/.slivr.json (merging into any existing config). Returns true on success.
 function saveKeyToConfig(key) {
@@ -326,9 +327,13 @@ export async function startRepl({ workdir, config, palette } = {}) {
         const demo = isDemonstrateRequest(taskToRun);
         if (demo) {
           const art = findArtifact(workdir, { preferWeb: demo.browser });
-          if (art) {
-            if (process.stdin.isTTY) await demonstrate(art, { ask: false });
-            else process.stdout.write(p.cyan(`▶ run ${art.what} with:  ${art.cmd}\n`));
+          // also handle an EXISTING project (no artifact built this session): use its run command.
+          const proj = !art ? detectCommands(workdir) : null;
+          const projCmd = proj && (proj.run?.cmd || proj.test?.cmd);
+          const hint = art || (projCmd ? { what: proj.ecosystem || "the project", cmd: projCmd, kind: "serve" } : null);
+          if (hint) {
+            if (process.stdin.isTTY) await demonstrate(hint, { ask: false });
+            else process.stdout.write(p.cyan(`▶ run ${hint.what} with:  ${hint.cmd}\n`));
           } else {
             process.stdout.write(p.yellow("nothing runnable found here yet — build something first, then say \"run it\".\n"));
           }

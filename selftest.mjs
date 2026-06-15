@@ -1252,6 +1252,37 @@ console.log("== 32. persistent + incremental codebase index — scale memory (Bl
   fs.rmSync(cacheDir, { recursive: true, force: true });
 }
 
+console.log("== 33. project_info — auto-detect test/run/build (gap #1) ==");
+{
+  const { detectCommands } = await import("./src/project.mjs");
+  const mk = (files) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), "proj-")); for (const [f, c] of Object.entries(files)) fs.writeFileSync(path.join(d, f), c); return d; };
+
+  const node = mk({ "package.json": JSON.stringify({ scripts: { test: "jest", start: "node server.js", build: "tsc" } }) });
+  const nc = detectCommands(node);
+  ok("project: node test/run/build from package.json", nc.test.cmd === "npm test" && nc.run.cmd === "npm start" && nc.build.cmd === "npm run build" && nc.ecosystem === "node");
+
+  const go = mk({ "go.mod": "module x\n", "main.go": "package main\nfunc main(){}" });
+  ok("project: go test/run", detectCommands(go).test.cmd === "go test ./..." && detectCommands(go).run.cmd === "go run .");
+
+  const rust = mk({ "Cargo.toml": "[package]\nname='x'" });
+  ok("project: rust test/run", detectCommands(rust).test.cmd === "cargo test" && detectCommands(rust).run.cmd === "cargo run");
+
+  const py = mk({ "pyproject.toml": "[tool.poetry]\n", "tests": "" }); fs.mkdirSync(path.join(py, "tests2")); // dir signal
+  ok("project: python pytest (poetry)", /pytest/.test(detectCommands(py).test.cmd));
+
+  const make = mk({ "Makefile": "test:\n\tnode t.js\nrun:\n\t./app\n" });
+  ok("project: Makefile targets", detectCommands(make).test.cmd === "make test" && detectCommands(make).run.cmd === "make run");
+
+  const empty = mk({ "README.md": "# x" });
+  ok("project: no manifest → nothing detected (graceful)", !detectCommands(empty).test && !detectCommands(empty).run);
+
+  // tool wiring + slivr's OWN repo detects npm test
+  const tt = new Tools(path.resolve("."));
+  ok("tool: project_info wired + detects slivr's npm test", tt.project_info().test === "npm test");
+
+  for (const d of [node, go, rust, py, make, empty]) fs.rmSync(d, { recursive: true, force: true });
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n== selftest: ${pass} passed, ${fail} failed ==`);
 process.exit(fail ? 1 : 0);
