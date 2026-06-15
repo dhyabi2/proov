@@ -42,6 +42,7 @@ wastes the turn). The JSON object looks like:
   {"tool":"see_page","args":{"path":"index.html"}}
   {"tool":"see_asset","args":{"svg":"<svg ...>...</svg>"}}
   {"tool":"play_game","args":{"path":"index.html","inputs":[{"at":0,"key":"ArrowRight","down":true}],"steps":120}}
+  {"tool":"play_levels","args":{"path":"index.html","steps":80}}
   {"tool":"delegate","args":{"task":"a focused, self-contained sub-task to run in a fresh sub-agent"}}
   {"tool":"parallel","args":{"tasks":["independent subtask A","independent subtask B"]}}
   {"tool":"pipeline","args":{"tasks":[{"id":"a","task":"do A","deps":[]},{"id":"b","task":"do B using A","deps":["a"]}]}}
@@ -171,6 +172,21 @@ BUILDING GAMES (make them real, not just code you can't verify): build a web gam
   (shapes, gradients, simple sprites), and synthesize sound with the WebAudio API (oscillators/noise +
   envelopes for SFX). Add game-feel/juice (easing/tweening on motion, a few particles, brief screen
   shake or hit-stop on impact) — small touches that make it feel commercial.
+
+MULTI-LEVEL GAMES (don't ship a single playground — build a real progression): most agents stop at ONE
+  level or clone level 1. Make a game with several MEANINGFULLY DIFFERENT levels and verify them all:
+  - DATA-DRIVEN levels: keep level DATA (layout, entity/spawn positions, goal, par, difficulty) SEPARATE
+    from the engine — an array/array-of-files of level records the engine loads. N levels = N data records,
+    NOT N copies of code. Make each level genuinely different: new layout, more/new enemies, a new mechanic
+    introduced, a rising difficulty curve — not a recoloured clone.
+  - A LEVEL MANAGER / flow: title → level 1 → (win) next / (lose) retry → … → victory, with level select
+    and progress. Expose it to the harness by EXTENDING the Simulacrum contract: window.slivrSim.levels (the
+    count, or the level array) and load(i) (load level i deterministically) alongside reset/step/input/state.
+  - VERIFY every level with play_levels {path}: it drives EACH level and reports per level — loads, plays
+    (responds to input), distinct (NOT a clone — it fingerprints each level's state and flags duplicates),
+    and completable (if state exposes won/cleared) — plus a contact sheet of every level's initial frame.
+    Fix any level flagged a CLONE or BROKEN, then play_levels again. Only call done when every level loads,
+    is distinct, plays, and the progression (win → next) works. Make each level a blueprint leaf for coverage.
 
 ASSET STUDIO (look at the art you make, then make it better): most agents emit "programmer art" because
   they never SEE what they drew. You can. When you generate visual art — a sprite, an icon, a logo, a
@@ -315,6 +331,7 @@ export function makeAgent(workdir, opts = {}) {
     view_pdf: (a) => tools.view_pdf(a),
     see_page: (a) => tools.see_page(a),
     play_game: (a) => tools.play_game(a),
+    play_levels: (a) => tools.play_levels(a),
     see_asset: (a) => tools.see_asset(a),
     blueprint_plan: (a) => tools.blueprint_plan(a),
     blueprint_status: (a) => tools.blueprint_status(a),
@@ -357,7 +374,7 @@ const SUBAGENT_BRIEF =
 // READ/INFORMATIONAL tools (not edits/commits), de-noised and length-capped.
 const FINDING_TOOLS = new Set([
   "read_file", "list_dir", "grep", "glob", "repo_map", "project_info", "house_style", "find_symbol", "find_refs", "run_command", "web_search",
-  "web_fetch", "view_pdf", "view_image", "see_page", "see_asset", "play_game", "compare_image", "compare_regions", "crop_image", "style_profile", "style_check", "orbit_scene", "world_map", "blueprint_status", "blueprint_audit", "git_status", "git_diff", "git_log",
+  "web_fetch", "view_pdf", "view_image", "see_page", "see_asset", "play_game", "play_levels", "compare_image", "compare_regions", "crop_image", "style_profile", "style_check", "orbit_scene", "world_map", "blueprint_status", "blueprint_audit", "git_status", "git_diff", "git_log",
 ]);
 export function extractFindings(sub, maxTotal = 2000) {
   const out = [];
@@ -621,6 +638,7 @@ export class Session {
       view_pdf: (a) => t.view_pdf(a),
       see_page: (a) => t.see_page(a),
       play_game: (a) => t.play_game(a),
+      play_levels: (a) => t.play_levels(a),
       see_asset: (a) => t.see_asset(a),
       blueprint_plan: (a) => t.blueprint_plan(a),
       blueprint_status: (a) => t.blueprint_status(a),

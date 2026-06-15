@@ -61,6 +61,7 @@ export function describeStep({ tool, args = {} }) {
     case "orbit_scene": return `orbit_scene ${args.path ?? "?"}${Array.isArray(args.angles) ? ` (${args.angles.length} angles)` : ""}`;
     case "world_map": return `world_map ${args.action ?? "show"}${args.name ? " " + args.name : ""}`;
     case "play_game": return `play_game ${args.path ?? "?"}${args.steps ? ` (${args.steps} steps)` : ""}`;
+    case "play_levels": return `play_levels ${args.path ?? "?"}`;
     case "run_command": return `run \`${clip(String(args.command ?? ""), 80)}\``;
     case "edit_file": return `edit ${args.path ?? "?"}`;
     case "edit_symbol": return `edit_symbol ${args.name ?? "?"}`;
