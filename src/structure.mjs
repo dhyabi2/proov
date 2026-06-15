@@ -1,0 +1,134 @@
+// structure.mjs — PRODUCTION-GAME STRUCTURE MODEL (Block 38).
+//
+// The agent's quality bar used to be PROSE ("recognizable characters, enemies, HUD, levels") with nothing
+// measuring it — so it shipped a ~2% skeleton (one stacked-primitive character, one cube, a sphere "coin",
+// flat green plane, black void sky) and called it "verified". This turns that prose into a TYPED, checkable
+// scene-graph contract: a genre-keyed list of nodes, each with a STATIC code signal (deterministic, offline)
+// and a VISION question (the semantic cross-check, asked by the done-gate's gemini judge). This file owns
+// the STATIC channel + the scorer; the vision channel lives in loop.mjs (visionChecklistGame).
+//
+// Detection per node is deliberately CONSERVATIVE: the gate's job here is to catch the egregious skeleton
+// (multiple entire required categories empty), NOT to nitpick a decent game — so a clearly-incomplete game
+// is pushed back with a concrete missing-list, while a game that covers the production layers passes.
+
+// genre → which node `applies` tags are in scope. "3d" pulls in lighting/envmap; "2d" drops them.
+export function classifyGenre(task) {
+  return /\b3d\b|three(?:\.js)?|webgl|first[- ]?person|\bfps\b|voxel|orbit/i.test(String(task || "")) ? "3d" : "2d";
+}
+
+// Was the user EXPLICIT about wanting something small? Then the production bar does not apply.
+export function wantsMinimal(task) {
+  return /\b(simple|minimal|basic|prototype|barebones|quick|rough|tiny|one[- ]?screen|placeholder)\b/i.test(String(task || ""));
+}
+
+// The contract. Each node: id, cat, label, required, weight, applies (genres), and a detector:
+//   any:[…]      present if the combined match count across these patterns ≥ (min||1)
+//   not:[…]      ANY match hard-zeros the node (anti-pattern: a black "sky", a sphere "coin", …)
+//   palette:true negative-evidence node: present when pure-saturated-primary use is NOT dominant
+const NODES = [
+  // ENVIRONMENT — a world backdrop, not a black void over a flat plane
+  { id: "env.sky", cat: "ENVIRONMENT", label: "sky / themed background (not a black void)", required: true, weight: 3, applies: ["2d", "3d"],
+    any: ["createLinearGradient", "createRadialGradient\\([^)]*sky", "scene\\.background\\s*=", "CubeTextureLoader", "new THREE\\.Color\\((?!\\s*0x0{6})", "\\bSky\\b", "skybox", "gradient"],
+    not: ["background\\s*=\\s*new THREE\\.Color\\(\\s*0x0{6}\\s*\\)", "background\\s*=\\s*['\"]#?0{3,6}['\"]"] },
+  { id: "env.lighting", cat: "ENVIRONMENT", label: "a lighting rig (≥2 lights, e.g. key + ambient)", required: true, weight: 2, applies: ["3d"], min: 2,
+    any: ["DirectionalLight", "HemisphereLight", "AmbientLight", "PointLight", "SpotLight", "RectAreaLight"] },
+  { id: "env.ground", cat: "ENVIRONMENT", label: "a ground / terrain surface", required: true, weight: 1, applies: ["2d", "3d"],
+    any: ["PlaneGeometry", "\\bground\\b", "\\bfloor\\b", "\\bterrain\\b", "fillRect\\(\\s*0\\s*,"] },
+
+  // CHARACTER — a rigged, faced character, not a stack of primitives
+  { id: "char.multipart", cat: "CHARACTER", label: "a multi-part character (body + head + limbs)", required: true, weight: 3, applies: ["2d", "3d"], min: 3,
+    any: ["\\b(arm|leg|torso|hand|foot|limb|hat|shirt|overall)\\b", "\\bhead\\b", "group\\.add\\(", "\\.add\\(\\s*\\w*(arm|leg|head|body|hat)"] },
+  { id: "char.face", cat: "CHARACTER", label: "a face (at least eyes)", required: true, weight: 2, applies: ["2d", "3d"],
+    any: ["\\beye(s|ball)?\\b", "\\bpupil\\b", "\\bface\\b", "\\bmouth\\b", "\\bnose\\b"] },
+  { id: "char.animation", cat: "CHARACTER", label: "character animation (idle/run/jump motion)", required: false, weight: 1, applies: ["2d", "3d"],
+    any: ["walkCycle", "animState", "mixer\\.update", "Math\\.sin\\([^)]*(time|t\\b|frame)", "\\.rotation\\.[xyz]\\s*[+\\-]?="] },
+
+  // ENEMIES — a roster that behaves
+  { id: "enemy.roster", cat: "ENEMIES", label: "≥2 distinct enemy types", required: true, weight: 3, applies: ["2d", "3d"], min: 2,
+    any: ["\\benem(y|ies)\\b", "\\bgoomba\\b", "\\bkoopa\\b", "\\bslime\\b", "\\bmonster\\b", "\\bmob\\b", "\\bfoe\\b"] },
+  { id: "enemy.behavior", cat: "ENEMIES", label: "enemy behavior (patrol/chase update)", required: false, weight: 1, applies: ["2d", "3d"],
+    any: ["enem(y|ies)[\\s\\S]{0,200}(position|velocity|patrol|chase|update|\\.x\\s*[+\\-]=)", "for\\s*\\([^)]*enem"] },
+
+  // COLLECTIBLES — discs that get picked up, not spheres that sit there
+  { id: "collect.coin", cat: "COLLECTIBLES", label: "collectibles / coins (discs, not spheres)", required: true, weight: 2, applies: ["2d", "3d"],
+    any: ["\\bcoin\\b", "\\bcollectible\\b", "\\bpickup\\b", "\\bgem\\b", "\\bstar\\b"],
+    not: ["coin[\\s\\S]{0,80}SphereGeometry"] },
+  { id: "collect.pickup", cat: "COLLECTIBLES", label: "pickup logic (collect → score/count changes)", required: false, weight: 2, applies: ["2d", "3d"],
+    any: ["score\\s*\\+=", "coins?\\s*\\+\\+", "coins?\\s*\\+=", "collect[\\s\\S]{0,80}(splice|remove|visible\\s*=\\s*false)"] },
+
+  // STRUCTURE — a level of placed geometry, not one lone block
+  { id: "struct.platforms", cat: "STRUCTURE", label: "platforms / level geometry (multiple)", required: true, weight: 2, applies: ["2d", "3d"], min: 2,
+    any: ["\\bplatform", "\\bbrick", "\\bpipe", "\\btile", "BoxGeometry"] },
+
+  // HUD — readouts on screen
+  { id: "hud.readouts", cat: "HUD", label: "a HUD (score / lives / timer / level)", required: true, weight: 3, applies: ["2d", "3d"],
+    any: ["fillText\\([^)]*(score|coin|life|lives|time|level)", "getElementById\\(['\"](score|hud|lives|coins|timer|level)", "innerHTML[\\s\\S]{0,40}(score|lives|coins|time)", "id=['\"]?(hud|score|lives)"] },
+  { id: "hud.endgame", cat: "HUD", label: "win / game-over screens", required: false, weight: 1, applies: ["2d", "3d"],
+    any: ["game\\s?over", "gameOver", "you\\s?win", "youwin", "\\bvictory\\b", "\\bdefeat\\b"] },
+
+  // LEVELS — data-driven, with win/lose
+  { id: "level.data", cat: "LEVELS", label: "data-driven level(s)", required: true, weight: 2, applies: ["2d", "3d"],
+    any: ["const\\s+levels?\\s*=\\s*\\[", "\\blevelData\\b", "\\btilemap\\b", "layout\\s*:", "levels?\\s*\\[\\s*\\d", "stage(s)?\\s*=\\s*\\["] },
+  { id: "level.winlose", cat: "LEVELS", label: "win + lose conditions", required: false, weight: 1, applies: ["2d", "3d"],
+    any: ["\\bgoal\\b", "\\bflag\\b", "\\bfinish\\b", "reachGoal", "isDead", "\\bdeath\\b", "lives\\s*[-]"] },
+
+  // MATERIALS — texture + palette discipline, not flat saturated plastic
+  { id: "mat.texture", cat: "MATERIALS", label: "textures (CanvasTexture / patterns, not bare color)", required: true, weight: 3, applies: ["2d", "3d"],
+    any: ["CanvasTexture", "TextureLoader", "createPattern", "getImageData", "drawImage", "normalMap", "roughnessMap", "envMap"] },
+  { id: "mat.palette", cat: "MATERIALS", label: "a cohesive palette (not all saturated primaries)", required: true, weight: 2, applies: ["2d", "3d"], palette: true },
+
+  // JUICE — feedback (optional, but counts toward polish)
+  { id: "juice.feedback", cat: "JUICE", label: "juice (particles / sound / shake / transitions)", required: false, weight: 1, applies: ["2d", "3d"],
+    any: ["\\bparticle", "AudioContext", "webkitAudioContext", "new Audio\\(", "oscillator", "screenShake", "\\bshake\\b", "createElement\\(['\"]audio"] },
+];
+
+function countMatches(html, pattern) {
+  try { return (html.match(new RegExp(pattern, "gi")) || []).length; } catch { return 0; }
+}
+
+// pure-saturated-primary hex usage (the #ff0000 / #00ff00 / #0000ff plastic look)
+function primaryCount(html) {
+  return countMatches(html, "0x(?:ff0000|00ff00|0000ff|ffff00|ff00ff|00ffff)") +
+         countMatches(html, "#(?:f00|0f0|00f|ff0000|00ff00|0000ff)\\b");
+}
+
+function detectNode(node, html) {
+  if (node.palette) {
+    const prim = primaryCount(html);
+    return { present: prim <= 3, count: prim, anti: false };
+  }
+  if (node.not && node.not.some((p) => countMatches(html, p) > 0)) return { present: false, count: 0, anti: true };
+  let count = 0;
+  for (const p of node.any || []) count += countMatches(html, p);
+  return { present: count >= (node.min || 1), count, anti: false };
+}
+
+// Score a built game's HTML/JS against the structure contract for its genre. STATIC channel only —
+// deterministic, no network, no browser. Returns the scorecard + the actionable missing-list.
+export function analyzeStructure(html, task = "") {
+  const src = String(html || "");
+  const genre = classifyGenre(task);
+  const nodes = NODES.filter((n) => n.applies.includes(genre));
+  const results = nodes.map((n) => ({ node: n, ...detectNode(n, src) }));
+
+  const req = results.filter((r) => r.node.required);
+  const opt = results.filter((r) => !r.node.required);
+  const sum = (arr, pick) => arr.reduce((a, r) => a + pick(r), 0);
+  const reqMax = sum(req, (r) => r.node.weight) || 1;
+  const optMax = sum(opt, (r) => r.node.weight) || 1;
+  const requiredScore = Math.round((sum(req, (r) => (r.present ? r.node.weight : 0)) / reqMax) * 100);
+  const optionalScore = Math.round((sum(opt, (r) => (r.present ? r.node.weight : 0)) / optMax) * 100);
+  const score = Math.round(0.75 * requiredScore + 0.25 * optionalScore);
+
+  // a required CATEGORY is "empty" when none of its required nodes are present — the skeleton signature.
+  const reqCats = [...new Set(req.map((r) => r.node.cat))];
+  const zeroCategories = reqCats.filter((c) => req.filter((r) => r.node.cat === c).every((r) => !r.present));
+  const missing = req.filter((r) => !r.present).map((r) => ({ id: r.node.id, label: r.node.label, anti: r.anti }));
+  const antiHits = results.filter((r) => r.anti).map((r) => r.node.id);
+
+  // PASS = the production layers are mostly there. FAIL = an egregious skeleton: 2+ entire required
+  // categories empty, OR required coverage below half. Tuned so game6 (≈5 empty cats) fails and a game
+  // that builds the real layers passes; deliberately lenient to avoid false-blocking a decent game.
+  const pass = zeroCategories.length <= 1 && requiredScore >= 55;
+  return { genre, score, requiredScore, optionalScore, pass, zeroCategories, missing, antiHits, nodes: results.map((r) => ({ id: r.node.id, present: r.present, count: r.count, anti: r.anti })) };
+}

@@ -37,5 +37,30 @@ recognizable character (not a box), enemies, collectibles, HUD, textured ground,
 genre's iconic elements — then answers present:yes/no for each by LOOKING at the rendered canvas. The
 game is verified ONLY when every item is "yes"; any "no" becomes the punch-list fed back to the agent.
 A checklist beats a single fuzzy score: it forces a commit per requirement and tells the user exactly
-WHICH thing is missing, not just "looks ~35% right". Remaining roadmap: a reference exemplar per genre
-and a bounded generate→checklist→regenerate loop until all-yes.
+WHICH thing is missing, not just "looks ~35% right".
+
+## BLOCK 38 — the 3D blind spot + the PRODUCTION-STRUCTURE MODEL
+
+Observed: a generated "3D Super Mario" (game6) was ~2% of a production game — one stacked-primitive
+character, one cube, a SPHERE "coin", flat #00ff00 plane, black-void sky, no enemies/HUD/levels/textures,
+saturated primaries — and the agent declared it "verified". Two root causes:
+
+1. THE GATE NEVER FIRED. `detectGameFile` required a literal `<canvas>` tag, but a Three.js game creates
+   its canvas dynamically (`renderer.domElement` → appendChild) so the source has none. Every 3D/WebGL
+   game silently skipped ALL verification — exactly the hardest class to get right. Fixed: the trigger now
+   also accepts a WebGL/Three.js page (`isWebGLPage`, the same signal the renderer uses).
+
+2. NO STRUCTURE MODEL. The quality bar was prose wishes with nothing measuring them, so the agent planned
+   and shipped a skeleton. Fixed with `src/structure.mjs` — a typed, genre-keyed SCENE-GRAPH CONTRACT of
+   ~18 nodes across 10 layers (ENVIRONMENT, CHARACTER, ENEMIES, COLLECTIBLES, STRUCTURE, CAMERA, HUD,
+   LEVELS, MATERIALS, JUICE). Each node has a deterministic STATIC code signal (+ anti-patterns: a black
+   "sky", a sphere "coin", all-primary palette hard-zero the node) and a vision question. `analyzeStructure`
+   scores the built game; an egregious skeleton (whole required layers empty) is pushed back at done with
+   the concrete missing-list. game6 scores ~21% (FAIL, 6 empty layers, sphere-coin flagged); a real game
+   scores 90%+. The taxonomy is also in the system prompt so the agent PLANS against it.
+
+The done-gate is now four channels, cheap→expensive: see_page (not broken) → autoplay (responds to real
+input) → art_review (not flat boxes) → STRUCTURE (production scene-graph, deterministic, offline) → VISION
+checklist (semantic fidelity to the request, all-yes = verified). Static + vision cross-check so neither
+token-stuffing nor pretty-but-wrong passes. Remaining roadmap: a genre reference exemplar and a bounded
+generate→checklist→regenerate loop until all-yes.
