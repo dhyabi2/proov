@@ -1178,6 +1178,15 @@ console.log("== 30. run-hint — anticipate intent / show how to run it (Block 9
     const m = openCommand("x.html", "darwin"), l = openCommand("x.html", "linux"), w = openCommand("x.html", "win32");
     return m.cmd === "open" && l.cmd === "xdg-open" && w.cmd === "cmd" && w.args.includes("start");
   })());
+
+  // "run it" / "run in browser" recognizer — launches directly instead of going to the model.
+  const { isDemonstrateRequest, findArtifact } = await import("./src/run_hint.mjs");
+  ok("demo-request: 'run in browser' recognized + browser", isDemonstrateRequest("run in browser")?.browser === true);
+  ok("demo-request: 'open it' recognized", !!isDemonstrateRequest("open it"));
+  ok("demo-request: 'show me' / 'play the game' recognized", !!isDemonstrateRequest("show me") && !!isDemonstrateRequest("play the game"));
+  ok("demo-request: real tasks NOT matched", !isDemonstrateRequest("run the tests") && !isDemonstrateRequest("open src/foo.js") && !isDemonstrateRequest("make a game"));
+  // findArtifact scans the dir for a previously-built artifact (index.html present from above)
+  ok("findArtifact: locates the index.html built earlier", findArtifact(d, { preferWeb: true })?.kind === "open");
   fs.rmSync(d, { recursive: true, force: true });
 }
 
