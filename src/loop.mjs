@@ -66,7 +66,7 @@ function clip(obj, max = 6000) {
 //   ok:false → the work failed; `feedback` (e.g. test output) is fed back and the model must REPAIR
 //   and call done again, up to `maxRepairs` times (the progress guard). This is what turns slivr from
 //   a blind one-shot agent into a self-verifying one — it never finishes "green" on a failing check.
-export async function runLoop({ provider, tools, toolMap, systemPrompt, task, maxSteps = 14, onStep, beforeTool, seedMessages, signal, verify, maxRepairs = 3, bridge }) {
+export async function runLoop({ provider, tools, toolMap, systemPrompt, task, maxSteps = Infinity, onStep, beforeTool, seedMessages, signal, verify, maxRepairs = 3, bridge }) {
   const messages = seedMessages && seedMessages.length
     ? seedMessages
     : [{ role: "system", content: systemPrompt }];
@@ -115,7 +115,7 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
     if (bridge) { await applyBridgeControl(); if (aborted) { trace.push({ step, aborted: true }); break; } }
     // Final-step nudge: on the last allowed step, tell the model to stop exploring and finish, so a
     // turn ends with a usable result instead of silently hitting the step cap.
-    if (step === maxSteps - 1 && maxSteps > 1 && !finalNudged) {
+    if (Number.isFinite(maxSteps) && step === maxSteps - 1 && maxSteps > 1 && !finalNudged) {
       messages.push({ role: "user", content: "This is your FINAL step. Stop exploring and call done now with your best result." });
       finalNudged = true;
     }
@@ -248,9 +248,12 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
     }
   }
 
-  // If we fell out of the loop without finishing, aborting, or erroring, we hit the step cap.
+  // If we fell out of the loop without finishing, aborting, or erroring, we hit a FINITE step cap (only
+  // possible when the user opted into one with --max-steps; the default is unlimited).
   if (!done && !aborted && !error && !stopped) {
-    stopped = `reached the ${maxSteps}-step limit before finishing — raise --max-steps or narrow the task`;
+    stopped = Number.isFinite(maxSteps)
+      ? `reached the ${maxSteps}-step cap you set — raise --max-steps, remove it for no cap, or narrow the task`
+      : "stopped before finishing";
   }
 
   return { done, summary, turns, editFailures, trace, aborted, error, stopped, verified, repairs, messages, totals: provider.totals() };

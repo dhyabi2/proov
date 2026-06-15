@@ -522,7 +522,7 @@ export async function runAgent(task, workdir, opts = {}) {
   const { provider, tools, toolMap } = makeAgent(workdir, opts);
   return runLoop({
     provider, tools, toolMap, systemPrompt: SYSTEM + styleSuffix(workdir), task,
-    maxSteps: opts.maxSteps ?? 16, onStep: opts.onStep,
+    maxSteps: opts.maxSteps ?? Infinity, onStep: opts.onStep,
     verify: opts.verify, maxRepairs: opts.maxRepairs,
   });
 }
@@ -537,7 +537,7 @@ export class Session {
     // fold web_search's separate OpenRouter spend into the session provider's accounting.
     this.tools = new Tools(workdir, { ...opts, onExternalUsage: (u) => this.provider.recordExternalUsage(u) });
     this.messages = null; // seeded on first run; persists across turns
-    this.maxSteps = opts.maxSteps ?? 16;
+    this.maxSteps = opts.maxSteps ?? Infinity;
     // diff capture: edit tools record { path, before, after } on the session for the UI to read.
     // lastDiff = single-file edits; lastDiffs = the per-file list for a batch edit_files.
     this.lastDiff = null;
