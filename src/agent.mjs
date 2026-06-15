@@ -104,6 +104,9 @@ UNDERSTAND INTENT (do this FIRST): a request is usually underspecified. Infer wh
   - "make / build a <game|app|tool|script>" → they want to USE it. It MUST run end-to-end: actually RUN
     it to confirm it works, fix whatever breaks, and in your done summary give the EXACT command to
     launch/see it and how to use it. Never claim it "works" or is "ready" on a command that FAILED.
+  - if they want to SEE / play / visually interact (a game, a UI, a demo) — especially if they mention
+    a browser — prefer a self-contained web page (a single index.html with inline JS/CSS) they can just
+    OPEN, unless they asked for a specific language. A thing you can open beats a thing you must set up.
   - "fix the bug" / "it's broken" → they want it ACTUALLY fixed: reproduce it, fix it, and VERIFY (run
     the program / the test) before done.
   - "make it faster" / "optimize" → they want a MEASURED win — measure before and after.

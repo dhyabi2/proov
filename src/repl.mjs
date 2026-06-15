@@ -15,8 +15,9 @@ import { renderDiff, diffStat } from "./diff.mjs";
 import { isDestructive, needsApproval } from "./safety.mjs";
 import { applyEdit as _applyEdit } from "./seal.mjs";
 import { listSkills, renderSkill, discoverSkills } from "./skills.mjs";
+import { spawn } from "node:child_process";
 import { listJobs } from "./jobs.mjs";
-import { runHintLine } from "./run_hint.mjs";
+import { runHintLine, detectRunHint, osOpen, launchVerb } from "./run_hint.mjs";
 
 // Persist an API key to ~/.slivr.json (merging into any existing config). Returns true on success.
 function saveKeyToConfig(key) {
@@ -120,14 +121,42 @@ export async function startRepl({ workdir, config, palette } = {}) {
       if (key && key.name === "tab" && !inPrompt) cycleMode();
     });
   }
+  let inDemo = false;   // true while a demonstrated artifact is running attached to the terminal
   rl.on("SIGINT", () => {
-    if (currentAbort) { currentAbort.abort(); return; } // interrupt the running turn
+    if (inDemo) return;                                  // Ctrl-C belongs to the running demo child
+    if (currentAbort) { currentAbort.abort(); return; }  // interrupt the running turn
     if (sigintArmed) { rl.close(); return; }
     sigintArmed = true;
     process.stdout.write(p.dim("\n(^C again to exit)\n"));
     rl.prompt();
     setTimeout(() => { sigintArmed = false; }, 1500);
   });
+
+  // Demonstrate a just-built artifact: offer to OPEN it (browser) or RUN it (terminal) — the "show me"
+  // the user actually wanted, not just a command to copy. Default yes; declining leaves the hint.
+  const demonstrate = async (hint) => {
+    const yes = await prompting(() => new Promise((resolve) => {
+      rl.question(p.bold(`  ${launchVerb(hint.kind)} now?`) + p.dim(" [Y/n] "), (a) => resolve(!/^\s*n/i.test(a || "")));
+    }));
+    if (!yes) return;
+    if (hint.kind === "open") {
+      const ok = osOpen(workdir, hint.target);
+      process.stdout.write(ok ? p.green(`  ✓ opened ${hint.target} in your browser\n`) : p.yellow("  couldn't open it automatically — run it yourself with the command above\n"));
+      return;
+    }
+    // run / serve → hand the terminal to the program so the user can actually use it.
+    process.stdout.write(p.dim(hint.kind === "serve" ? "  starting it — press Ctrl-C to stop and return to slivr.\n" : "  running it — press Ctrl-C to stop and return.\n"));
+    await new Promise((resolve) => {
+      inDemo = true;
+      rl.pause();
+      let child;
+      try { child = spawn(hint.cmd, { cwd: workdir, shell: true, stdio: "inherit" }); }
+      catch (e) { process.stdout.write(p.yellow(`  could not run it: ${e.message}\n`)); inDemo = false; rl.resume(); return resolve(); }
+      const finish = () => { inDemo = false; rl.resume(); resolve(); };
+      child.on("exit", finish);
+      child.on("error", (e) => { process.stdout.write(p.yellow(`  could not run it: ${e.message}\n`)); finish(); });
+    });
+  };
 
   // Plan-approval (interactive): show the recorded plan and ask y/e/n. Edit replaces the steps.
   const approvePlan = async () => {
@@ -312,8 +341,15 @@ export async function startRepl({ workdir, config, palette } = {}) {
         if (res.summary) process.stdout.write("\n" + res.summary + "\n");
         if (res.stopped) { process.stdout.write(p.yellow(`\n∅ ${res.stopped}\n`)); footerStatus = "incomplete"; }
         else if (!res.summary) process.stdout.write(p.dim("\n(done — no summary)\n"));
-        // Anticipate intent (Block 9): if the turn built a runnable artifact, ALWAYS show how to run it.
-        if (createdThisTurn.length) { const hint = runHintLine(workdir, createdThisTurn); if (hint) process.stdout.write("\n" + p.cyan(hint) + "\n"); }
+        // Anticipate intent (Blocks 9 & 10): if the turn built a runnable artifact, show how to run it
+        // AND offer to actually demonstrate it (open the browser / run it), so "show me" really shows.
+        if (createdThisTurn.length) {
+          const hint = detectRunHint(workdir, createdThisTurn);
+          if (hint) {
+            process.stdout.write("\n" + p.cyan(`▶ run ${hint.what} with:  ${hint.cmd}`) + "\n");
+            if (process.stdin.isTTY) await demonstrate(hint);
+          }
+        }
       }
       if (session.tools.tasks.length) process.stdout.write("\n" + renderTasks(session.tools.tasks, p) + "\n");
       process.stdout.write(footer({ turns: res.turns, totalTokens: res.totals.totalTokens, cost: res.totals.cost, model: session.provider.model, status: footerStatus }, p) + "\n\n");
