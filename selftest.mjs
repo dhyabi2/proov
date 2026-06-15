@@ -1632,6 +1632,49 @@ console.log("== 42. bridge — autonomous agent-to-agent mode (Sentinel, Block 2
   fs.rmSync(d, { recursive: true, force: true });
 }
 
+console.log("== 43. play_levels — multi-level: load, distinct (anti-clone), playable (Block 23) ==");
+{
+  const { buildLevelsHarness } = await import("./src/gameharness.mjs");
+  const { findBrowser } = await import("./src/eye.mjs");
+
+  // harness injects the level-iterating driver + the extended contract marker
+  const h = buildLevelsHarness("<html><body><canvas></canvas></body></html>", { steps: 30 });
+  ok("levels harness: injects the level driver reading slivrSim.levels + load(i)", /slivrSim/.test(h) && /__slivr_levels/.test(h) && /STEPS=30/.test(h));
+
+  ok("play_levels: requires a path", new Tools(tmp).play_levels({}).error === "NO_PATH");
+
+  if (findBrowser()) {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "levels-"));
+    const t = new Tools(d);
+    // 3 genuinely DISTINCT levels (different start x + goal + bg)
+    fs.writeFileSync(path.join(d, "good.html"),
+      "<!doctype html><html><body><canvas id=c width=240 height=80></canvas><script>" +
+      "var LV=[{x:10,goal:100},{x:30,goal:180},{x:5,goal:60}];var x=10,goal=100,won=false,right=false,cur=0;" +
+      "function draw(){var ctx=document.getElementById('c').getContext('2d');ctx.fillStyle=['#123','#231','#312'][cur%3];ctx.fillRect(0,0,240,80);ctx.fillStyle='#fd0';ctx.fillRect(x,30,12,12);}" +
+      "window.slivrSim={levels:LV.length,load:function(i){cur=i;x=LV[i].x;goal=LV[i].goal;won=false;right=false;draw();},step:function(dt){if(won)return;if(right)x+=3;if(x>=goal)won=true;draw();},input:function(k,dn){if(k==='ArrowRight')right=dn;},state:function(){return{x:Math.round(x),won:won,level:cur};}};" +
+      "window.slivrSim.load(0);</script></body></html>");
+    // 3 CLONED levels (load ignores i — all identical except the level index)
+    fs.writeFileSync(path.join(d, "clone.html"),
+      "<!doctype html><html><body><canvas id=c width=240 height=80></canvas><script>" +
+      "var x=10,goal=100,won=false,right=false,cur=0;function draw(){var ctx=document.getElementById('c').getContext('2d');ctx.fillStyle='#123';ctx.fillRect(0,0,240,80);ctx.fillStyle='#fd0';ctx.fillRect(x,30,12,12);}" +
+      "window.slivrSim={levels:3,load:function(i){cur=i;x=10;goal=100;won=false;right=false;draw();},step:function(dt){if(right)x+=3;if(x>=goal)won=true;draw();},input:function(k,dn){if(k==='ArrowRight')right=dn;},state:function(){return{x:Math.round(x),won:won,level:cur};}};" +
+      "window.slivrSim.load(0);</script></body></html>");
+
+    const good = t.play_levels({ path: "good.html", steps: 80 });
+    ok("play_levels: drives all levels + attaches a contact sheet", good.ok && good.count === 3 && !!good.multimodal);
+    ok("play_levels: 3 distinct levels → all distinct, all playable, no clones", good.allDistinct && good.allPlayable && good.clones.length === 0 && good.levels.every((l) => l.loads && l.plays && l.distinct));
+    const clone = t.play_levels({ path: "clone.html", steps: 80 });
+    // THE KEY PROPERTY: cloned levels (identical but for the index) are caught as non-distinct.
+    ok("play_levels: catches CLONED levels (the usual multi-level failure)", clone.ok && clone.count === 3 && clone.uniqueLevels === 1 && clone.clones.length === 3 && clone.allDistinct === false);
+
+    fs.writeFileSync(path.join(d, "nolevels.html"), "<!doctype html><html><body><canvas></canvas><script>window.slivrSim={step:function(){},state:function(){return{};}};</script></body></html>");
+    ok("play_levels: reports a game with no levels contract", t.play_levels({ path: "nolevels.html" }).error === "NO_LEVELS_CONTRACT");
+    fs.rmSync(d, { recursive: true, force: true });
+  } else {
+    ok("play_levels: (no browser installed — live skipped)", true);
+  }
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n== selftest: ${pass} passed, ${fail} failed ==`);
 process.exit(fail ? 1 : 0);

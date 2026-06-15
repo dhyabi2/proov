@@ -19,7 +19,7 @@ import { buildSymbolIndex, findSymbol, findReferences, repoOverview, langOf, sym
 import { renderDom, renderShot, visibleText } from "./eye.mjs";
 import { detectCommands, describeCommands } from "./project.mjs";
 import { detectStyle, styleBrief } from "./style.mjs";
-import { playGame } from "./gameharness.mjs";
+import { playGame, playLevels } from "./gameharness.mjs";
 import { renderAsset } from "./asset.mjs";
 import * as bp from "./blueprint.mjs";
 import { compareImages, cropImage, compareRegions, styleProfile, styleAdherence, hexColor } from "./match.mjs";
@@ -440,6 +440,28 @@ export class Tools {
     if (res.error) return { ok: true, played: false, note: `could not drive the game: ${res.error}. Expose window.slivrSim={reset,step,input,state} to make it playtestable.${r.screenshot ? " (final frame attached)" : ""}`, ...img };
     const snaps = res.snapshots || [];
     return { ok: true, played: true, snapshots: snaps, note: `played ${res.steps} steps · ${snaps.length} state snapshots:\n${JSON.stringify(snaps).slice(0, 2200)}`, ...img };
+  }
+
+  // play_levels (Block 23 — multi-level): drive EVERY level of a multi-level game and verify each one
+  // loads, is DISTINCT (not a clone of level 1 — the usual failure), plays, and (if state exposes a win
+  // flag) is completable, plus a contact sheet of every level's initial frame. The game must extend the
+  // Simulacrum contract with window.slivrSim.levels (count or array) + load(i) (or reset(i)).
+  play_levels({ path: rel, steps, dt, inputs, cap } = {}) {
+    if (!rel) return { ok: false, error: "NO_PATH", hint: 'pass {"path":"index.html"} — the multi-level game' };
+    let abs; try { abs = this._resolve(rel); } catch (e) { return { ok: false, error: e.message }; }
+    if (!fs.existsSync(abs)) return { ok: false, error: "FILE_NOT_FOUND", path: rel };
+    const r = playLevels(abs, { steps, dt, inputs, cap });
+    if (!r.ok) return { ok: false, error: r.error, hint: r.hint || "couldn't drive levels — is Chrome installed? expose slivrSim.levels + load(i)" };
+    const broken = r.levels.filter((l) => !l.loads || !l.plays).map((l) => l.level);
+    const clonesNote = r.clones.length ? ` CLONES: levels ${r.clones.join(",")} are identical to another level — make them meaningfully different (layout/enemies/goal).` : "";
+    const allGood = r.clones.length === 0 && broken.length === 0 && r.count > 1;
+    const out = {
+      ok: true, count: r.count, declared: r.declared, uniqueLevels: r.uniqueLevels, clones: r.clones,
+      levels: r.levels, allDistinct: r.clones.length === 0, allPlayable: broken.length === 0,
+      note: `${r.count} level${r.count === 1 ? "" : "s"} driven · ${r.uniqueLevels} distinct.${clonesNote}${broken.length ? ` BROKEN: levels ${broken.join(",")} didn't load or didn't respond.` : ""}${allGood ? " All levels load, play, and are distinct." : " Look at the contact sheet — each level should look and play differently."}`,
+    };
+    if (r.dataUrl) out.multimodal = { kind: "image", path: "levels", mime: "image/png", dataUrl: r.dataUrl };
+    return out;
   }
 
   // see_asset (Block 16 — Asset Studio): render ONE generated asset in isolation and SEE it, so you can
