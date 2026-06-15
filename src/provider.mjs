@@ -65,8 +65,9 @@ export class Provider {
   // text + image_url / file). Array content is passed through to OpenRouter UNCHANGED. When a PDF
   // file block is in-context (or plugins are passed explicitly) the file-parser plugin is merged so
   // OpenRouter extracts the PDF text for the model. Returns { text, usage, raw }.
-  async chat(messages, { temperature = 0.2, signal, plugins } = {}) {
+  async chat(messages, { temperature = 0.2, signal, plugins, model } = {}) {
     if (!this.key) throw new Error("NO_OPENROUTER_KEY");
+    const useModel = model || this.model;   // per-call override (dual-model routing: creator vs editor)
     if (signal?.aborted) { const e = new Error("aborted"); e.name = "AbortError"; throw e; }
     // auto-attach the PDF parser plugin when a pdf is present (callers may also pass plugins).
     let pluginList = Array.isArray(plugins) ? [...plugins] : [];
@@ -84,8 +85,8 @@ export class Provider {
           method: "POST",
           headers: { Authorization: "Bearer " + this.key, "Content-Type": "application/json" },
           body: JSON.stringify({
-            model: this.model, temperature, max_tokens: this.maxTokens,
-            messages: applyPromptCache(messages, this.model),   // cache the stable prefix — no text change
+            model: useModel, temperature, max_tokens: this.maxTokens,
+            messages: applyPromptCache(messages, useModel),   // cache the stable prefix — no text change
             ...(pluginList.length ? { plugins: pluginList } : {}),
           }),
           signal: ctrl.signal,
@@ -106,7 +107,7 @@ export class Provider {
         const pt = u.prompt_tokens ?? 0;
         const ct = u.completion_tokens ?? 0;
         const cached = cachedTokensOf(u);   // prompt tokens served from cache (billed ~10%, not full)
-        const c = costUSD(this.model, pt, ct);
+        const c = costUSD(useModel, pt, ct);
         // accumulate session totals
         this.calls++;
         this.promptTokens += pt;
