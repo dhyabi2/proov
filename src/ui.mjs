@@ -45,6 +45,7 @@ export function describeStep({ tool, args = {} }) {
     case "find_refs": return `find_refs ${args.name ?? "?"}`;
     case "repo_map": return `repo_map`;
     case "project_info": return `project_info`;
+    case "house_style": return `house_style`;
     case "see_page": return `see_page ${args.path ?? "?"}${args.visual ? " (visual)" : ""}`;
     case "run_command": return `run \`${clip(String(args.command ?? ""), 80)}\``;
     case "edit_file": return `edit ${args.path ?? "?"}`;

@@ -17,6 +17,7 @@ import { costUSD } from "./provider.mjs";
 import { buildSymbolIndex, findSymbol, findReferences, repoOverview, langOf, symbolSpan } from "./repomap.mjs";
 import { renderDom, renderShot, visibleText } from "./eye.mjs";
 import { detectCommands, describeCommands } from "./project.mjs";
+import { detectStyle, styleBrief } from "./style.mjs";
 
 // Re-indent a replacement block to a target base indent (strip its own common indent, prepend target).
 function reindentBlock(block, indent) {
@@ -298,6 +299,13 @@ export class Tools {
   project_info() {
     const d = detectCommands(this.workdir);
     return { ok: true, ecosystem: d.ecosystem, test: d.test?.cmd || null, run: d.run?.cmd || null, build: d.build?.cmd || null, evidence: d.evidence, note: describeCommands(d) };
+  }
+
+  // house_style (Block 14): detect the repo's coding conventions (indent / quotes / semicolons /
+  // naming) from its config + existing files, so new/edited code MATCHES the house style. Zero cost.
+  house_style() {
+    const s = detectStyle(this.workdir);
+    return { ok: true, brief: styleBrief(s) || "(no strong convention detected)", indent: s.indent, quote: s.quote?.value || null, semicolons: s.semi?.value ?? null, naming: s.naming?.value || null, basis: s.basis };
   }
 
   // find_symbol: jump straight to a definition (file:line + signature) instead of grepping through
