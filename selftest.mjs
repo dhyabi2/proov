@@ -1167,6 +1167,17 @@ console.log("== 30. run-hint — anticipate intent / show how to run it (Block 9
 
   ok("run-hint: nothing runnable → no hint", detectRunHint(d, ["notes.txt"]) === null && runHintLine(d, ["notes.txt"]) === "");
   ok("run-hint: line format mentions a command", runHintLine(d, ["game.py"]).startsWith("▶ run"));
+
+  // Block 10: classify HOW to launch, and the OS open command (pure, no spawn).
+  const { detectRunHint: drh, openCommand, launchVerb } = await import("./src/run_hint.mjs");
+  ok("demonstrate: web page → kind 'open' + target", (() => { const h = drh(d, ["index.html"]); return h.kind === "open" && h.target === "index.html"; })());
+  ok("demonstrate: python → kind 'run'", drh(d, ["game.py"]).kind === "run");
+  ok("demonstrate: node app → kind 'serve'", drh(d, ["package.json"]).kind === "serve");
+  ok("demonstrate: launchVerb wording", launchVerb("open").includes("browser") && launchVerb("run") === "run it");
+  ok("demonstrate: openCommand mac/linux/win", (() => {
+    const m = openCommand("x.html", "darwin"), l = openCommand("x.html", "linux"), w = openCommand("x.html", "win32");
+    return m.cmd === "open" && l.cmd === "xdg-open" && w.cmd === "cmd" && w.args.includes("start");
+  })());
   fs.rmSync(d, { recursive: true, force: true });
 }
 
