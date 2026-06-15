@@ -18,6 +18,7 @@ import { buildSymbolIndex, findSymbol, findReferences, repoOverview, langOf, sym
 import { renderDom, renderShot, visibleText } from "./eye.mjs";
 import { detectCommands, describeCommands } from "./project.mjs";
 import { detectStyle, styleBrief } from "./style.mjs";
+import { playGame } from "./gameharness.mjs";
 
 // Re-indent a replacement block to a target base indent (strip its own common indent, prepend target).
 function reindentBlock(block, indent) {
@@ -416,6 +417,23 @@ export class Tools {
     const text = visibleText(d.dom);
     if (!text) return { ok: true, path: rel, rendered: "", blank: true, note: "the page rendered BLANK (no visible text) — likely a JS error or an empty body. Check your script." };
     return { ok: true, path: rel, rendered: text.slice(0, 4000), note: "this is the VISIBLE rendered text (post-JS). Check it reads correctly — e.g. line breaks render as breaks, not a literal \\n. For layout, call see_page with visual:true." };
+  }
+
+  // play_game (Block 15): DRIVE a web game headlessly and observe it — the keystone for making real
+  // games. The game must expose window.slivrSim={reset,step,input,state}; this resets it, applies a
+  // scripted input timeline, steps N frames, and returns the game STATE over time + a final-frame
+  // screenshot, so you can verify it actually plays (moves, scores, ends) and fix what doesn't.
+  play_game({ path: rel, steps, dt, inputs, seed } = {}) {
+    if (!rel) return { ok: false, error: "NO_PATH", hint: 'pass {"path":"index.html","inputs":[{"at":0,"key":"ArrowRight","down":true}],"steps":120}' };
+    let abs; try { abs = this._resolve(rel); } catch (e) { return { ok: false, error: e.message }; }
+    if (!fs.existsSync(abs)) return { ok: false, error: "FILE_NOT_FOUND", path: rel };
+    const r = playGame(abs, { steps, dt, inputs, seed });
+    if (!r.ok) return { ok: false, error: r.error, hint: "couldn't drive the game — is Chrome installed?" };
+    const res = r.result || {};
+    const img = r.screenshot ? { multimodal: { kind: "image", path: `${rel} (frame)`, mime: "image/png", dataUrl: r.screenshot } } : {};
+    if (res.error) return { ok: true, played: false, note: `could not drive the game: ${res.error}. Expose window.slivrSim={reset,step,input,state} to make it playtestable.${r.screenshot ? " (final frame attached)" : ""}`, ...img };
+    const snaps = res.snapshots || [];
+    return { ok: true, played: true, snapshots: snaps, note: `played ${res.steps} steps · ${snaps.length} state snapshots:\n${JSON.stringify(snaps).slice(0, 2200)}`, ...img };
   }
 
   // view_pdf: PRIMARY path sends the PDF to the model via OpenRouter's file-parser plugin (so the
