@@ -10,6 +10,15 @@ import { Provider } from "./provider.mjs";
 import { Tools } from "./tools.mjs";
 import { runLoop } from "./loop.mjs";
 import { connectAll, closeAll, mcpPromptSection } from "./mcp.mjs";
+import { detectStyle, styleBrief } from "./style.mjs";
+
+// A one-line HOUSE STYLE suffix appended to the system prompt so the agent matches the repo's
+// conventions (indent/quotes/semicolons/naming) from the start. Cheap (samples files once); "" when
+// nothing confident is detected (e.g. an empty/new dir).
+function styleSuffix(workdir) {
+  try { const b = styleBrief(detectStyle(workdir)); return b ? `\n\nHOUSE STYLE (match the existing repo when you add or edit code): ${b}.` : ""; }
+  catch { return ""; }
+}
 
 const SYSTEM = `You are slivr, a precise coding agent that edits a real repository.
 
@@ -22,6 +31,7 @@ wastes the turn). The JSON object looks like:
   {"tool":"glob","args":{"pattern":"src/**/*.js"}}
   {"tool":"repo_map","args":{}}
   {"tool":"project_info","args":{}}
+  {"tool":"house_style","args":{}}
   {"tool":"find_symbol","args":{"name":"functionOrClassName"}}
   {"tool":"find_refs","args":{"name":"functionOrClassName"}}
   {"tool":"run_command","args":{"command":"node check.js"}}
@@ -58,6 +68,9 @@ EDIT PROTOCOL (important — this is how you keep edits cheap and correct):
   ATOMICALLY (all-or-nothing) in fewer turns; same anchor rules. If any edit fails, none apply
   and you get repair packets for the failing ones.
 - git_* tools inspect the repo and can commit; slivr NEVER pushes.
+- MATCH THE HOUSE STYLE: new/edited code must be indistinguishable from the surrounding code —
+  indentation (tabs vs spaces + width), quote style, semicolons, and naming case. A HOUSE STYLE line
+  may appear at the end of these instructions; for detail call house_style, or mirror a nearby file.
 
 MULTIMODAL: use view_image to LOOK at a screenshot/diagram/photo (png/jpg/gif/webp), and view_pdf
   to READ a PDF. After you call one, the file is attached to the conversation and you can describe
@@ -146,6 +159,7 @@ export function makeAgent(workdir, opts = {}) {
     glob: (a) => tools.glob(a),
     repo_map: (a) => tools.repo_map(a),
     project_info: (a) => tools.project_info(a),
+    house_style: (a) => tools.house_style(a),
     find_symbol: (a) => tools.find_symbol(a),
     find_refs: (a) => tools.find_refs(a),
     run_command: (a) => tools.run_command(a),
@@ -190,7 +204,7 @@ const SUBAGENT_BRIEF =
 // the caller gets the actual content even if the model wrote a terse summary. We surface only
 // READ/INFORMATIONAL tools (not edits/commits), de-noised and length-capped.
 const FINDING_TOOLS = new Set([
-  "read_file", "list_dir", "grep", "glob", "repo_map", "project_info", "find_symbol", "find_refs", "run_command", "web_search",
+  "read_file", "list_dir", "grep", "glob", "repo_map", "project_info", "house_style", "find_symbol", "find_refs", "run_command", "web_search",
   "web_fetch", "view_pdf", "view_image", "see_page", "git_status", "git_diff", "git_log",
 ]);
 export function extractFindings(sub, maxTotal = 2000) {
@@ -338,7 +352,7 @@ export function planGate({ tool, tools }) {
 export async function runAgent(task, workdir, opts = {}) {
   const { provider, tools, toolMap } = makeAgent(workdir, opts);
   return runLoop({
-    provider, tools, toolMap, systemPrompt: SYSTEM, task,
+    provider, tools, toolMap, systemPrompt: SYSTEM + styleSuffix(workdir), task,
     maxSteps: opts.maxSteps ?? 16, onStep: opts.onStep,
     verify: opts.verify, maxRepairs: opts.maxRepairs,
   });
@@ -363,7 +377,8 @@ export class Session {
     this.mcpClients = [];
     this.mcpCatalog = [];
     this.mcpErrors = [];
-    this.systemPrompt = SYSTEM; // augmented with an MCP section once servers connect.
+    this._styleSuffix = styleSuffix(this.workdir);   // house-style brief, computed once per session
+    this.systemPrompt = SYSTEM + this._styleSuffix;  // augmented with an MCP section once servers connect.
     this.toolMap = this._buildToolMap();
   }
 
@@ -379,7 +394,7 @@ export class Session {
     for (const t of catalog) {
       this.toolMap[t.id] = (a) => t.client.callTool(t.name, a || {});
     }
-    if (catalog.length) this.systemPrompt = SYSTEM + mcpPromptSection(catalog);
+    if (catalog.length) this.systemPrompt = SYSTEM + this._styleSuffix + mcpPromptSection(catalog);
     return { catalog, errors };
   }
 
@@ -435,6 +450,7 @@ export class Session {
       grep: (a) => t.grep(a),
       repo_map: (a) => t.repo_map(a),
       project_info: (a) => t.project_info(a),
+      house_style: (a) => t.house_style(a),
       find_symbol: (a) => t.find_symbol(a),
       find_refs: (a) => t.find_refs(a),
       run_command: (a) => t.run_command(a),

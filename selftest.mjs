@@ -1283,6 +1283,42 @@ console.log("== 33. project_info — auto-detect test/run/build (gap #1) ==");
   for (const d of [node, go, rust, py, make, empty]) fs.rmSync(d, { recursive: true, force: true });
 }
 
+console.log("== 34. house_style — convention matching (Block 14) ==");
+{
+  const { detectStyle, styleBrief } = await import("./src/style.mjs");
+  const mk = (files) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), "style-")); for (const [f, c] of Object.entries(files)) fs.writeFileSync(path.join(d, f), c); return d; };
+
+  // Repo A: 4-space, double quotes, semicolons, camelCase
+  const a = mk({ "a.js": 'function fooBar(x) {\n    const y = "hi";\n    return y;\n}\nfunction bazQux(a) {\n    return a + 1;\n}\n' });
+  const sa = detectStyle(a);
+  ok("style: detects 4-space/double/semi/camel", sa.indent.style === "space" && sa.indent.size === 4 && sa.quote.value === "double" && sa.semi.value === true && sa.naming.value === "camel");
+
+  // Repo B: tabs, single quotes, no semicolons, snake_case
+  const b = mk({ "b.js": "function foo_bar(x) {\n\tconst y = 'hi'\n\treturn y\n}\nfunction baz_qux(a) {\n\treturn a + 1\n}\n" });
+  const sb = detectStyle(b);
+  ok("style: detects tabs/single/no-semi/snake", sb.indent.style === "tab" && sb.quote.value === "single" && sb.semi.value === false && sb.naming.value === "snake");
+
+  // .editorconfig is authoritative for indent (overrides the file content)
+  const c = mk({ ".editorconfig": "[*]\nindent_style = tab\n", "c.js": "function f(){\n  return 1;\n}\n" });
+  ok("style: .editorconfig wins for indent", detectStyle(c).indent.style === "tab" && detectStyle(c).basis.includes("config"));
+
+  // prettier config is authoritative for quotes/semi
+  const pr = mk({ ".prettierrc.json": JSON.stringify({ singleQuote: true, semi: false }), "p.js": 'const x = "a";\n' });
+  const sp = detectStyle(pr);
+  ok("style: prettier wins for quotes/semi", sp.quote.value === "single" && sp.semi.value === false);
+
+  // brief string + empty dir
+  ok("style: brief reads naturally", /space indent.*double quotes.*semicolons.*camelCase/.test(styleBrief(sa)));
+  ok("style: empty repo → no brief", styleBrief(detectStyle(mk({ "README.md": "# x" }))) === "");
+
+  // tool wiring + agent system prompt gets the house-style suffix
+  ok("tool: house_style wired", new Tools(b).house_style().naming === "snake");
+  const { Session } = await import("./src/agent.mjs");
+  ok("agent: system prompt carries the house-style brief", new Session(b).systemPrompt.includes("HOUSE STYLE"));
+
+  for (const d of [a, b, c, pr]) fs.rmSync(d, { recursive: true, force: true });
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n== selftest: ${pass} passed, ${fail} failed ==`);
 process.exit(fail ? 1 : 0);
