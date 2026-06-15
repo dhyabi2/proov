@@ -61,6 +61,34 @@ export function runHintLine(dir, createdPaths = []) {
   return h ? `▶ run ${h.what} with:  ${h.cmd}` : "";
 }
 
+// Scan the workdir (and common subfolders) for an EXISTING launchable artifact — used when the user
+// says "run it" / "open in browser" so slivr can launch what was built in a previous turn. Prefers a
+// web page (most "showable"). Returns a launch descriptor or null.
+export function findArtifact(dir, { preferWeb = false } = {}) {
+  const found = [];
+  for (const sub of ["", "public", "dist", "build", "src", "web", "www"]) {
+    let entries;
+    try { entries = fs.readdirSync(path.join(dir, sub)); } catch { continue; }
+    for (const f of entries) found.push(sub ? `${sub}/${f}` : f);
+  }
+  if (preferWeb) {
+    const html = found.find(f => /(^|\/)index\.html?$/.test(f)) || found.find(f => /\.html?$/.test(f));
+    if (html) return { what: "the page", cmd: `open ${html}`, kind: "open", target: html };
+  }
+  return detectRunHint(dir, found);
+}
+
+// Recognize a short "show me the result" request (run / open / play / "run in browser") so slivr can
+// LAUNCH the artifact itself rather than handing it to the model. Strict so it never hijacks a real
+// task: only bare imperatives about a generic result, optionally "in (the) browser". Returns
+// { browser } | null. "run the tests", "open src/x.js", etc. do NOT match.
+const DEMO_RE = /^(run|open|launch|preview|show|play|start|see|view|demo)( (it|this|me|us|the (app|game|page|site|server|project|result|demo|thing|code)))?( (in|on)( the)? browser)?$/i;
+export function isDemonstrateRequest(line) {
+  const s = (line || "").trim().replace(/[!.?]+$/, "");
+  if (!DEMO_RE.test(s)) return null;
+  return { browser: /browser/i.test(s) };
+}
+
 // The verb to offer the user, given the launch kind.
 export function launchVerb(kind) {
   return kind === "open" ? "open it in your browser" : kind === "serve" ? "start it" : "run it";

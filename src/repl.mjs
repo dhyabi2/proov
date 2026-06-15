@@ -17,7 +17,7 @@ import { applyEdit as _applyEdit } from "./seal.mjs";
 import { listSkills, renderSkill, discoverSkills } from "./skills.mjs";
 import { spawn } from "node:child_process";
 import { listJobs } from "./jobs.mjs";
-import { runHintLine, detectRunHint, osOpen, launchVerb } from "./run_hint.mjs";
+import { runHintLine, detectRunHint, findArtifact, osOpen, launchVerb, isDemonstrateRequest } from "./run_hint.mjs";
 
 // Persist an API key to ~/.slivr.json (merging into any existing config). Returns true on success.
 function saveKeyToConfig(key) {
@@ -134,11 +134,13 @@ export async function startRepl({ workdir, config, palette } = {}) {
 
   // Demonstrate a just-built artifact: offer to OPEN it (browser) or RUN it (terminal) — the "show me"
   // the user actually wanted, not just a command to copy. Default yes; declining leaves the hint.
-  const demonstrate = async (hint) => {
-    const yes = await prompting(() => new Promise((resolve) => {
-      rl.question(p.bold(`  ${launchVerb(hint.kind)} now?`) + p.dim(" [Y/n] "), (a) => resolve(!/^\s*n/i.test(a || "")));
-    }));
-    if (!yes) return;
+  const demonstrate = async (hint, { ask = true } = {}) => {
+    if (ask) {
+      const yes = await prompting(() => new Promise((resolve) => {
+        rl.question(p.bold(`  ${launchVerb(hint.kind)} now?`) + p.dim(" [Y/n] "), (a) => resolve(!/^\s*n/i.test(a || "")));
+      }));
+      if (!yes) return;
+    }
     if (hint.kind === "open") {
       const ok = osOpen(workdir, hint.target);
       process.stdout.write(ok ? p.green(`  ✓ opened ${hint.target} in your browser\n`) : p.yellow("  couldn't open it automatically — run it yourself with the command above\n"));
@@ -243,7 +245,12 @@ export async function startRepl({ workdir, config, palette } = {}) {
   let lastTasksRender = "";
   const onStep = ({ tool, args, result, denied }) => {
     if (tool === "done") return;
-    if (tool === "create_file" && result?.ok && args?.path) createdThisTurn.push(args.path);
+    // Track files the agent created/wrote this turn (any tool) → drives the "▶ run/open it" offer.
+    if (result?.ok) {
+      if ((tool === "create_file" || tool === "edit_file") && args?.path) createdThisTurn.push(args.path);
+      else if (tool === "edit_symbol" && result.file) createdThisTurn.push(result.file);
+      else if (tool === "edit_files" && Array.isArray(result.files)) createdThisTurn.push(...result.files);
+    }
     // A parallel run with any failed/unfinished sub-task is NOT a clean success.
     const parallelPartial = tool === "parallel" && result?.ok && result.failed > 0;
     const status = denied ? "skip" : (result?.ok === false || parallelPartial) ? "fail" : "ok";
@@ -310,6 +317,24 @@ export async function startRepl({ workdir, config, palette } = {}) {
         // A skill command (/run <name> or /<name>) resolves to a task string to run as a turn.
         if (stop && typeof stop === "object" && stop.runTask) { taskToRun = stop.runTask; }
         else { safePrompt(); continue; }
+      }
+
+      // "run it" / "open it" / "run in browser" / "show me" → slivr LAUNCHES the artifact directly,
+      // instead of sending it to the model (which just describes how to open it). This is what the
+      // user means by "run in browser": actually open it.
+      if (!command) {
+        const demo = isDemonstrateRequest(taskToRun);
+        if (demo) {
+          const art = findArtifact(workdir, { preferWeb: demo.browser });
+          if (art) {
+            if (process.stdin.isTTY) await demonstrate(art, { ask: false });
+            else process.stdout.write(p.cyan(`▶ run ${art.what} with:  ${art.cmd}\n`));
+          } else {
+            process.stdout.write(p.yellow("nothing runnable found here yet — build something first, then say \"run it\".\n"));
+          }
+          safePrompt();
+          continue;
+        }
       }
 
       // A normal request (or a resolved skill) -> run a turn (input paused so Ctrl-C maps to abort).
