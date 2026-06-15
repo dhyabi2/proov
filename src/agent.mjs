@@ -21,6 +21,7 @@ wastes the turn). The JSON object looks like:
   {"tool":"grep","args":{"pattern":"regex","path":"."}}
   {"tool":"glob","args":{"pattern":"src/**/*.js"}}
   {"tool":"repo_map","args":{}}
+  {"tool":"project_info","args":{}}
   {"tool":"find_symbol","args":{"name":"functionOrClassName"}}
   {"tool":"find_refs","args":{"name":"functionOrClassName"}}
   {"tool":"run_command","args":{"command":"node check.js"}}
@@ -98,6 +99,9 @@ CODE NAVIGATION: to find WHERE something is defined, prefer find_symbol (jumps s
   definition's file:line + signature) over grep (which returns every mention). Use find_refs to find
   WHO USES a symbol (call-sites) — run it before changing a function's signature so you update every
   caller. Use repo_map for a compact overview of an unfamiliar repo before reading files.
+  To VERIFY a change or RUN an existing project you've never seen, call project_info — it auto-detects
+  the test / run / build commands for this repo (any ecosystem). Run those to confirm your work; don't
+  guess the command.
 
 UNDERSTAND INTENT (do this FIRST): a request is usually underspecified. Infer what the user ACTUALLY
   wants — the real end-goal and the UNSTATED success criteria — and deliver against THAT, not just the
@@ -141,6 +145,7 @@ export function makeAgent(workdir, opts = {}) {
     grep: (a) => tools.grep(a),
     glob: (a) => tools.glob(a),
     repo_map: (a) => tools.repo_map(a),
+    project_info: (a) => tools.project_info(a),
     find_symbol: (a) => tools.find_symbol(a),
     find_refs: (a) => tools.find_refs(a),
     run_command: (a) => tools.run_command(a),
@@ -185,7 +190,7 @@ const SUBAGENT_BRIEF =
 // the caller gets the actual content even if the model wrote a terse summary. We surface only
 // READ/INFORMATIONAL tools (not edits/commits), de-noised and length-capped.
 const FINDING_TOOLS = new Set([
-  "read_file", "list_dir", "grep", "glob", "repo_map", "find_symbol", "find_refs", "run_command", "web_search",
+  "read_file", "list_dir", "grep", "glob", "repo_map", "project_info", "find_symbol", "find_refs", "run_command", "web_search",
   "web_fetch", "view_pdf", "view_image", "see_page", "git_status", "git_diff", "git_log",
 ]);
 export function extractFindings(sub, maxTotal = 2000) {
@@ -429,6 +434,7 @@ export class Session {
       list_dir: (a) => t.list_dir(a),
       grep: (a) => t.grep(a),
       repo_map: (a) => t.repo_map(a),
+      project_info: (a) => t.project_info(a),
       find_symbol: (a) => t.find_symbol(a),
       find_refs: (a) => t.find_refs(a),
       run_command: (a) => t.run_command(a),
