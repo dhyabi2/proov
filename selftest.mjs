@@ -1319,6 +1319,40 @@ console.log("== 34. house_style — convention matching (Block 14) ==");
   for (const d of [a, b, c, pr]) fs.rmSync(d, { recursive: true, force: true });
 }
 
+console.log("== 35. play_game — drive + observe a running game (Block 15, keystone) ==");
+{
+  const { buildHarness } = await import("./src/gameharness.mjs");
+  const { findBrowser } = await import("./src/eye.mjs");
+
+  // buildHarness injects a driver that calls window.slivrSim and writes a result marker
+  const h = buildHarness("<html><body><h1>g</h1></body></html>", { steps: 50, inputs: [{ at: 0, key: "ArrowRight", down: true }] });
+  ok("harness: injects the slivrSim driver", /window\.slivrSim/.test(h) && /__slivr_out/.test(h) && /<\/body>/.test(h));
+  ok("harness: embeds the input timeline + step count", /ArrowRight/.test(h) && /STEPS=50/.test(h));
+
+  // REAL drive — only if a headless browser is installed (skipped cleanly otherwise).
+  if (findBrowser()) {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "game-"));
+    fs.writeFileSync(path.join(d, "g.html"),
+      "<!doctype html><html><body><canvas id=c width=320 height=80></canvas><script>" +
+      "let x=10,score=0,over=false,right=false;" +
+      "window.slivrSim={reset(s){x=10;score=0;over=false;right=false;},step(dt){if(over)return;if(right){x+=2;score++;}if(x>200)over=true;},input(k,dn){if(k==='ArrowRight')right=dn;},state(){return{x:Math.round(x),score,over};}};" +
+      "</script></body></html>");
+    const t = new Tools(d);
+    const r = t.play_game({ path: "g.html", inputs: [{ at: 0, key: "ArrowRight", down: true }], steps: 150 });
+    const snaps = r.snapshots || [];
+    ok("play_game: drives the game and reads state over time", r.ok && r.played && snaps.length > 2);
+    ok("play_game: the ball MOVED, SCORED, and reached game-over", snaps[snaps.length - 1].x > snaps[0].x && snaps[snaps.length - 1].score > 0 && snaps.some(s => s.over));
+    ok("play_game: attaches a final-frame screenshot", !!r.multimodal && r.multimodal.kind === "image");
+    // a game WITHOUT the contract reports it (still tries a screenshot)
+    fs.writeFileSync(path.join(d, "nostate.html"), "<html><body><h1>no sim</h1></body></html>");
+    ok("play_game: flags a game with no slivrSim contract", t.play_game({ path: "nostate.html", steps: 10 }).played === false);
+    fs.rmSync(d, { recursive: true, force: true });
+  } else {
+    ok("play_game: (no browser installed — live drive skipped)", true);
+  }
+  ok("play_game: requires a path", new Tools(tmp).play_game({}).ok === false);
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n== selftest: ${pass} passed, ${fail} failed ==`);
 process.exit(fail ? 1 : 0);

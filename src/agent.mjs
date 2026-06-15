@@ -40,6 +40,7 @@ wastes the turn). The JSON object looks like:
   {"tool":"view_image","args":{"path":"shot.png"}}
   {"tool":"view_pdf","args":{"path":"spec.pdf"}}
   {"tool":"see_page","args":{"path":"index.html"}}
+  {"tool":"play_game","args":{"path":"index.html","inputs":[{"at":0,"key":"ArrowRight","down":true}],"steps":120}}
   {"tool":"delegate","args":{"task":"a focused, self-contained sub-task to run in a fresh sub-agent"}}
   {"tool":"parallel","args":{"tasks":["independent subtask A","independent subtask B"]}}
   {"tool":"pipeline","args":{"tasks":[{"id":"a","task":"do A","deps":[]},{"id":"b","task":"do B using A","deps":["a"]}]}}
@@ -140,6 +141,24 @@ VISUAL CHECK (web pages — use your EYE): after you build or change an HTML pag
   see_page {path, visual:true} to get a screenshot you can look at. Do NOT claim a page works without
   looking at it with see_page.
 
+BUILDING GAMES (make them real, not just code you can't verify): build a web game as a single
+  self-contained index.html (canvas + inline JS). To make it PLAYTESTABLE, expose a deterministic
+  control surface — this is required so you can actually verify it plays:
+    window.slivrSim = {
+      reset(seed){ /* re-init; seed your RNG so runs are deterministic */ },
+      step(dtMs){ /* advance ONE update+render; your requestAnimationFrame loop should just call this */ },
+      input(key,isDown){ /* set a held input, e.g. 'ArrowRight', true */ },
+      state(){ return { /* small snapshot: x, y, score, over, ... */ }; }
+    };
+  Then call play_game {path, inputs:[{at:0,key:"ArrowRight",down:true}], steps:120} to DRIVE the game and
+  read its STATE OVER TIME plus a final-frame screenshot. VERIFY it really plays — things MOVE, score
+  changes, win/lose (state.over) is reachable — and fix whatever doesn't, then play_game again. A game
+  that "looks done" in code but doesn't move when driven is NOT done.
+  Make it look and sound INTENTIONAL with zero asset files: draw all art PROCEDURALLY on the canvas
+  (shapes, gradients, simple sprites), and synthesize sound with the WebAudio API (oscillators/noise +
+  envelopes for SFX). Add game-feel/juice (easing/tweening on motion, a few particles, brief screen
+  shake or hit-stop on impact) — small touches that make it feel commercial.
+
 DRAFT-FIRST (important for HARD tasks): do NOT spend all your turns planning or reasoning. Commit a
   SIMPLE, COMPLETE, runnable solution EARLY — even a naive/brute-force one — then improve it. Always
   have working code written before you run out of steps; a correct-but-slow solution beats none.
@@ -176,6 +195,7 @@ export function makeAgent(workdir, opts = {}) {
     view_image: (a) => tools.view_image(a),
     view_pdf: (a) => tools.view_pdf(a),
     see_page: (a) => tools.see_page(a),
+    play_game: (a) => tools.play_game(a),
     delegate: (a) => delegateSubAgent(a, workdir, opts),
     parallel: (a) => parallelSubAgents(a, workdir, opts),
     pipeline: (a) => pipelineSubAgents(a, workdir, opts),
@@ -205,7 +225,7 @@ const SUBAGENT_BRIEF =
 // READ/INFORMATIONAL tools (not edits/commits), de-noised and length-capped.
 const FINDING_TOOLS = new Set([
   "read_file", "list_dir", "grep", "glob", "repo_map", "project_info", "house_style", "find_symbol", "find_refs", "run_command", "web_search",
-  "web_fetch", "view_pdf", "view_image", "see_page", "git_status", "git_diff", "git_log",
+  "web_fetch", "view_pdf", "view_image", "see_page", "play_game", "git_status", "git_diff", "git_log",
 ]);
 export function extractFindings(sub, maxTotal = 2000) {
   const out = [];
@@ -468,6 +488,7 @@ export class Session {
       view_image: (a) => t.view_image(a),
       view_pdf: (a) => t.view_pdf(a),
       see_page: (a) => t.see_page(a),
+      play_game: (a) => t.play_game(a),
       delegate: (a) => delegateSubAgent(a, this.workdir, this.opts),
       parallel: (a) => parallelSubAgents(a, this.workdir, this.opts),
       pipeline: (a) => pipelineSubAgents(a, this.workdir, this.opts),
