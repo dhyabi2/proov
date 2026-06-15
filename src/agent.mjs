@@ -45,6 +45,7 @@ wastes the turn). The JSON object looks like:
   {"tool":"play_levels","args":{"path":"index.html","steps":80}}
   {"tool":"autoplay","args":{"path":"index.html","keys":["ArrowRight","ArrowUp","Space"]}}
   {"tool":"certify_level","args":{"rows":["#######","#S.k.G#","#######"]}}
+  {"tool":"install_deps","args":{}}
   {"tool":"start_server","args":{"command":"node server.js"}}
   {"tool":"http_request","args":{"url":"http://localhost:3000/api/health"}}
   {"tool":"stop_server","args":{}}
@@ -250,7 +251,8 @@ SERVER / NODE APPS (a real app on a URL, not just a static file): when the task 
   - The server MUST listen on process.env.PORT (fall back to a default only if PORT is unset). slivr injects
     a free PORT when it starts the server, so hardcoding a port will fight the harness.
   - Prefer a ZERO-DEPENDENCY node http server unless a framework is genuinely needed; if you DO add
-    dependencies, install them with run_command "npm install" (this may need approval) before starting.
+    dependencies, declare them in package.json and run install_deps (approval-gated; --ignore-scripts by
+    default — pass allowScripts:true only if a dependency genuinely needs its build step) before starting.
   - RUN + VERIFY it (this is how you know it works, like see_page for static pages):
     1. start_server {command:"node server.js"} → returns {url, port}. (Or "npm start" / "npm run dev".)
     2. http_request {url:"<url>/api/..."} to check API routes return the right status/JSON.
@@ -465,6 +467,7 @@ export function makeAgent(workdir, opts = {}) {
     start_server: (a) => tools.start_server(a),
     stop_server: (a) => tools.stop_server(a),
     http_request: (a) => tools.http_request(a),
+    install_deps: (a) => tools.install_deps(a),
     see_asset: (a) => tools.see_asset(a),
     blueprint_plan: (a) => tools.blueprint_plan(a),
     blueprint_status: (a) => tools.blueprint_status(a),

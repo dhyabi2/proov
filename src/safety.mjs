@@ -86,7 +86,9 @@ export function isDestructive(command) {
 // kind ∈ {'run_command','edit_file','edit_files','create_file','write_file', other}.
 export function needsApproval(kind, mode = "edits") {
   const mutating = kind === "edit_file" || kind === "edit_files" || kind === "edit_symbol" || kind === "create_file" || kind === "write_file";
-  const effecting = kind === "run_command";
+  // commands that EXECUTE code: a shell command, installing dependencies (arbitrary postinstall scripts),
+  // or starting a server (runs the app). All gated like run_command — never silently in 'edits'/'all'.
+  const effecting = kind === "run_command" || kind === "install_deps" || kind === "start_server";
   if (mode === "auto") return false;
   if (mode === "all") return mutating || effecting;
   // 'edits' (default): prompt before MODIFYING existing code and before commands. Creating a BRAND-NEW
