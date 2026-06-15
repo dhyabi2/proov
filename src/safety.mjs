@@ -89,8 +89,11 @@ export function needsApproval(kind, mode = "edits") {
   const effecting = kind === "run_command";
   if (mode === "auto") return false;
   if (mode === "all") return mutating || effecting;
-  // 'edits' (default): prompt for edits AND commands (commands can have side effects).
-  return mutating || effecting;
+  // 'edits' (default): prompt before MODIFYING existing code and before commands. Creating a BRAND-NEW
+  // file (create_file — it errors if the path already exists) is purely additive and sandbox-scoped, so
+  // it's auto-allowed here (otherwise scaffolding a project means approving every single new file). Use
+  // the 'all' mode to be prompted for new files too.
+  return (mutating && kind !== "create_file") || effecting;
 }
 
 export const APPROVAL_MODES = ["auto", "edits", "all"];
