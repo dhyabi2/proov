@@ -181,8 +181,27 @@ VISUAL CHECK (web pages — use your EYE): after you build or change an HTML pag
 
 BUILDING GAMES (make them real, not just code you can't verify): the DEFAULT is the ADVANCED, COMPLETE,
   polished game (see UNDERSTAND INTENT) — recognizable characters (not boxes), multiple levels, enemies,
-  score/HUD, win/lose, physics feel, juice, real art. Do NOT ship a flat-boxes prototype. Build a web game
-  as a single self-contained index.html (canvas + inline JS). To make it PLAYTESTABLE, expose a deterministic
+  score/HUD, win/lose, physics feel, juice, real art. Do NOT ship a flat-boxes prototype.
+
+  PRODUCTION-STRUCTURE CONTRACT — a game is measured against the scene-graph layers a real game has, NOT a
+  skeleton of one character + one block. Before building, PLAN each layer; while building, fill them all; a
+  game that renders + responds but is missing whole layers is pushed back at done. Build, for real (artkit):
+    1. ENVIRONMENT — a themed sky/background (a gradient or image, NEVER a black void), a lighting rig (3D:
+       ≥2 lights incl. ambient/hemisphere), a TEXTURED ground/terrain (not one flat saturated plane).
+    2. CHARACTER — a multi-PART rig (body + head + limbs) with a FACE (eyes), proportioned, animated — never
+       a stack of plain primitives, never a single box/sphere.
+    3. ENEMIES — ≥2 visually distinct types that MOVE/behave (patrol/chase), defeatable.
+    4. COLLECTIBLES — coins as flat SPINNING DISCS (never a sphere) + ≥1 power-up; touching them changes a count.
+    5. STRUCTURE — a real LEVEL of placed geometry (multiple platforms + themed props: bricks/pipes/blocks).
+    6. CAMERA — follows the player and FRAMES the world (sky + ground + level), not a flat low view into a void.
+    7. HUD — score / lives / timer / level on screen, plus title + win + game-over states.
+    8. LEVELS — DATA-DRIVEN, ≥2 meaningfully different, with clear WIN and LOSE conditions.
+    9. MATERIALS — TEXTURES (CanvasTexture / patterns / maps) and a COHESIVE palette — NOT 6 saturated
+       primaries (#ff0000/#00ff00/#0000ff) with flat MeshStandardMaterial(color) plastic.
+   10. JUICE — particles, sound (WebAudio), screen shake, transitions.
+  Only drop layers if the user EXPLICITLY asked for a "simple"/"minimal"/"prototype" game.
+
+  Build a web game as a single self-contained index.html (canvas + inline JS). To make it PLAYTESTABLE, expose a deterministic
   control surface — this is required so you can actually verify it plays:
     window.slivrSim = {
       reset(seed){ /* re-init; seed your RNG so runs are deterministic */ },

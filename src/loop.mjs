@@ -12,14 +12,24 @@ import path from "node:path";
 import { buildMultimodalContent } from "./multimodal.mjs";
 import { applyControl, controlToMessage } from "./bridge.mjs";
 import { compressContext } from "./compress.mjs";
+import { isWebGLPage } from "./webcheck.mjs";
+import { analyzeStructure, wantsMinimal } from "./structure.mjs";
 
 // Detect a built WEB GAME in the workdir (a canvas + an animation loop / control contract), so the
 // done-gate can verify it actually PLAYS before accepting done. Returns the html path or null.
+// IMPORTANT: a 2D game has a literal <canvas> tag, but a 3D/Three.js/WebGL game CREATES its canvas
+// dynamically (renderer.domElement → appendChild) so the source has NO <canvas> tag. Detecting only the
+// literal tag silently skipped the ENTIRE gate for exactly the hardest class of game (3D). So we accept
+// EITHER a literal <canvas> OR a WebGL/Three.js page (same signal the renderer uses), plus a loop/contract.
+export function isGameHtml(html) {
+  const s = String(html || "");
+  const hasLoopOrContract = /(requestAnimationFrame|slivrSim|getContext\s*\()/i.test(s);
+  return hasLoopOrContract && (/<canvas/i.test(s) || isWebGLPage(s));
+}
 function detectGameFile(workdir) {
   for (const name of ["index.html", "game.html"]) {
     try {
-      const html = fs.readFileSync(path.join(workdir, name), "utf8");
-      if (/<canvas/i.test(html) && /(requestAnimationFrame|slivrSim|getContext\s*\()/i.test(html)) return name;
+      if (isGameHtml(fs.readFileSync(path.join(workdir, name), "utf8"))) return name;
     } catch { /* not there */ }
   }
   return null;
@@ -241,21 +251,36 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
               // not frozen → unless the user EXPLICITLY asked for a minimal/simple game, check the CANVAS
               // ART isn't flat coloured "boxes" (advanced/complete is the default). Rate the canvas, not
               // the page; a low threshold catches only egregious programmer-art (boxes), not modest art.
-              else if (!/\b(simple|minimal|basic|prototype|barebones|quick|rough)\b/i.test(String(task || ""))) {
+              else if (!wantsMinimal(task)) {
                 const rich = typeof tools._gameArtRichness === "function" ? tools._gameArtRichness(gameFile) : null;
                 if (rich != null && rich < 18) problem = `the ART is flat PROGRAMMER ART (canvas richness ${rich}/100) — coloured boxes/blocks, not a real themed game. Build recognizable characters/enemies + textured art with the artkit (the user expects the ADVANCED game by default).`;
-                // SEMANTIC FIDELITY (Block 37): pixel-richness can't tell "looks like Mario" from "colourful
-                // blobs". When a vision judge model is configured, have it derive a yes/no CHECKLIST of what
-                // the request requires and answer each by LOOKING at the canvas — verified ⇔ every item is
-                // present; any missing item is the punch-list fed back. Gated on a real key + verifyModel so
-                // offline/selftest runs skip it. A short/garbled checklist or any error never blocks.
-                else if (verifyModel && provider && typeof provider.hasKey === "function" && provider.hasKey() && typeof tools._gameCanvasDataURL === "function") {
-                  const dataUrl = tools._gameCanvasDataURL(gameFile);
-                  const crit = await visionChecklistGame(provider, verifyModel, task, dataUrl, signal);
-                  if (crit && crit.total >= 4 && crit.missing.length) {
-                    const punch = crit.missing.slice(0, 8).map((m) => "  ✗ " + m).join("\n");
-                    problem = `the vision QA checklist (${String(verifyModel).split("/").pop()}) found ${crit.present}/${crit.total} required things present — these are NOT visible in your render yet:\n${punch}\nAdd each so EVERY checklist item is present, then verify again.`;
-                    trace.push({ step, visionChecklist: { present: crit.present, total: crit.total, missing: crit.missing.slice(0, 8) } });
+                else {
+                  // STRUCTURE GATE (Block 38): the deterministic production-scene-graph contract. A game that
+                  // renders + responds + isn't flat boxes can STILL be a ~2% skeleton (one character, one cube,
+                  // a sphere "coin", black sky, no enemies/HUD/levels/textures). Score the built code against
+                  // the genre's required layers; an egregious skeleton (whole layers empty) is pushed back with
+                  // the concrete missing list. Deterministic + offline (no key) — the cheap first channel.
+                  try {
+                    const html = fs.readFileSync(path.join(tools.workdir, gameFile), "utf8");
+                    const st = analyzeStructure(html, task);
+                    if (!st.pass) {
+                      const punch = st.missing.slice(0, 9).map((m) => "  ✗ " + m.label + (m.anti ? " (placeholder / wrong primitive)" : "")).join("\n");
+                      problem = `the STRUCTURE is only ~${st.requiredScore}% of a production game — ${st.zeroCategories.length} whole layer${st.zeroCategories.length === 1 ? "" : "s"} are missing (${st.zeroCategories.join(", ") || "—"}). Build these, real (use the artkit), not placeholders:\n${punch}`;
+                      trace.push({ step, structure: { requiredScore: st.requiredScore, zero: st.zeroCategories, missing: st.missing.map((m) => m.id) } });
+                    }
+                  } catch { /* couldn't read the file → don't block */ }
+                  // SEMANTIC FIDELITY (Block 37): pixel-richness + static structure can't tell "looks like
+                  // Mario" from "colourful blobs". If structure passed and a vision judge is configured, have it
+                  // derive a yes/no CHECKLIST of what the request requires and answer each by LOOKING at the
+                  // canvas — verified ⇔ every item present. Gated on a real key so offline/selftest runs skip it.
+                  if (!problem && verifyModel && provider && typeof provider.hasKey === "function" && provider.hasKey() && typeof tools._gameCanvasDataURL === "function") {
+                    const dataUrl = tools._gameCanvasDataURL(gameFile);
+                    const crit = await visionChecklistGame(provider, verifyModel, task, dataUrl, signal);
+                    if (crit && crit.total >= 4 && crit.missing.length) {
+                      const punch = crit.missing.slice(0, 8).map((m) => "  ✗ " + m).join("\n");
+                      problem = `the vision QA checklist (${String(verifyModel).split("/").pop()}) found ${crit.present}/${crit.total} required things present — these are NOT visible in your render yet:\n${punch}\nAdd each so EVERY checklist item is present, then verify again.`;
+                      trace.push({ step, visionChecklist: { present: crit.present, total: crit.total, missing: crit.missing.slice(0, 8) } });
+                    }
                   }
                 }
               }

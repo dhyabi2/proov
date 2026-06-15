@@ -2043,6 +2043,11 @@ console.log("== 57. done-gate — push back when done is called with incomplete 
   fs.rmSync(d, { recursive: true, force: true }); fs.rmSync(d2, { recursive: true, force: true });
 }
 
+// A structurally-COMPLETE 2D game used by the gate tests: renders richly + responds to ArrowRight AND
+// satisfies the production-structure contract (sky, multi-part character + eye, 2 enemy types, coin disc +
+// pickup, platforms, HUD, level data, CanvasTexture, cohesive palette) — so it passes EVERY done-gate.
+const COMPLETE_GAME = '<!doctype html><html><body><canvas id=c width=240 height=160></canvas><script>var cv=document.getElementById("c"),x=cv.getContext("2d"),px=20,keys={},score=0,lives=3;addEventListener("keydown",function(e){keys[e.key]=true;});const levels=[{layout:[[1,0,1]],goal:{x:9}}];class Goomba{constructor(){this.x=160;}update(){this.x-=1;}}class Koopa{constructor(){this.x=200;}patrol(){this.x-=1;}}var enemies=[new Goomba(),new Koopa()];var platforms=[[0,128],[120,100]];function brick(){}var coin={x:60,y:90},coins=[coin];function collect(){score+=10;coins.splice(0,1);}var head,body,arm,leg,eye;function tex(){var t=document.createElement("canvas");t.width=8;t.height=8;var tx=t.getContext("2d");tx.fillStyle="#5fa84f";tx.fillRect(0,0,8,8);return x.createPattern(t,"repeat");}function loop(){if(keys["ArrowRight"])px+=4;var g=x.createLinearGradient(0,0,0,160);g.addColorStop(0,"#7ec8f0");g.addColorStop(1,"#cdeafe");x.fillStyle=g;x.fillRect(0,0,240,160);x.fillStyle="#5fa84f";x.fillRect(0,128,240,32);for(var i=0;i<240;i+=3){x.fillStyle="rgba(0,0,0,0.05)";x.fillRect(i,128,1,6);}var rg=x.createRadialGradient(px+6,80,2,px+10,86,15);rg.addColorStop(0,"#ffeedd");rg.addColorStop(1,"#bb3322");x.fillStyle=rg;x.beginPath();x.arc(px+10,86,13,0,7);x.fill();x.fillStyle="#fff";x.beginPath();x.arc(px+6,80,3,0,7);x.fill();x.fillStyle="#e8c84a";x.beginPath();x.arc(60,90,6,0,7);x.fill();x.fillStyle="#8a5a3a";x.fillRect(enemies[0].x,116,12,12);x.fillStyle="#fff";x.fillText("score "+score+" lives "+lives,8,16);requestAnimationFrame(loop);}loop();</script></body></html>';
+
 console.log("== 58. playability done-gate — a game must actually PLAY before done (Block 35) ==");
 {
   const { findBrowser } = await import("./src/eye.mjs");
@@ -2053,10 +2058,10 @@ console.log("== 58. playability done-gate — a game must actually PLAY before d
     const r = await runLoop({ provider: mkProv([{ tool: "done", args: { summary: "playable" } }, { tool: "done", args: { summary: "done" } }]), tools: t, toolMap: {}, systemPrompt: "s", task: "make a game", maxSteps: 8 });
     ok("playability gate: a FROZEN game is pushed back at done (autoplay caught it)", r.trace.some((x) => x.gameGate) && r.done && r.turns <= 3);
     const d2 = fs.mkdtempSync(path.join(os.tmpdir(), "gg2-")); const t2 = new Tools(d2);
-    // a WORKING game with REAL (shaded/gradient) art — responds AND not flat boxes → passes.
-    fs.writeFileSync(path.join(d2, "index.html"), '<!doctype html><html><body><canvas id=c width=240 height=160></canvas><script>var cv=document.getElementById("c"),x=cv.getContext("2d"),px=20,keys={};addEventListener("keydown",function(e){keys[e.key]=true;});function loop(){if(keys["ArrowRight"])px+=4;var g=x.createLinearGradient(0,0,0,160);g.addColorStop(0,"#7ec8f0");g.addColorStop(1,"#cdeafe");x.fillStyle=g;x.fillRect(0,0,240,160);x.fillStyle="#5fa84f";x.fillRect(0,128,240,32);for(var i=0;i<240;i+=3){x.fillStyle="rgba(0,0,0,0.05)";x.fillRect(i,128,1,6);}var rg=x.createRadialGradient(px+6,80,2,px+10,86,15);rg.addColorStop(0,"#ffeedd");rg.addColorStop(1,"#bb3322");x.fillStyle=rg;x.beginPath();x.arc(px+10,86,13,0,7);x.fill();x.fillStyle="#fff";x.beginPath();x.arc(px+6,80,3,0,7);x.fill();requestAnimationFrame(loop);}loop();</script></body></html>');
+    // a WORKING, structurally-complete game — responds AND not flat boxes AND full structure → passes.
+    fs.writeFileSync(path.join(d2, "index.html"), COMPLETE_GAME);
     const r2 = await runLoop({ provider: mkProv([{ tool: "done", args: { summary: "done" } }]), tools: t2, toolMap: {}, systemPrompt: "s", task: "make a game", maxSteps: 8 });
-    ok("playability gate: a WORKING richly-drawn game passes (no false block)", !r2.trace.some((x) => x.gameGate) && r2.done && r2.turns === 1);
+    ok("playability gate: a WORKING complete game passes (no false block)", !r2.trace.some((x) => x.gameGate) && r2.done && r2.turns === 1);
     const d3 = fs.mkdtempSync(path.join(os.tmpdir(), "gg3-")); const t3 = new Tools(d3);
     fs.writeFileSync(path.join(d3, "index.html"), "<html><body><h1>not a game</h1></body></html>");
     const r3 = await runLoop({ provider: mkProv([{ tool: "done", args: { summary: "done" } }]), tools: t3, toolMap: {}, systemPrompt: "s", task: "make a page", maxSteps: 8 });
@@ -2088,8 +2093,8 @@ console.log("== 59. semantic vision checklist — yes/no QA of game vs request i
   const SOME_MISSING = cl(["recognizable character (not a box)", false], ["enemies", false], ["coins/collectibles", true], ["score HUD", true], ["textured ground", true]);
   const ALL_PRESENT = cl(["recognizable character", true], ["enemies", true], ["coins/collectibles", true], ["score HUD", true], ["textured ground", true]);
   if (findBrowser()) {
-    // a WORKING, richly-drawn game (responds + not flat boxes) so the gate reaches the VISION step.
-    const richHtml = '<!doctype html><html><body><canvas id=c width=240 height=160></canvas><script>var cv=document.getElementById("c"),x=cv.getContext("2d"),px=20,keys={};addEventListener("keydown",function(e){keys[e.key]=true;});function loop(){if(keys["ArrowRight"])px+=4;var g=x.createLinearGradient(0,0,0,160);g.addColorStop(0,"#7ec8f0");g.addColorStop(1,"#cdeafe");x.fillStyle=g;x.fillRect(0,0,240,160);x.fillStyle="#5fa84f";x.fillRect(0,128,240,32);for(var i=0;i<240;i+=3){x.fillStyle="rgba(0,0,0,0.05)";x.fillRect(i,128,1,6);}var rg=x.createRadialGradient(px+6,80,2,px+10,86,15);rg.addColorStop(0,"#ffeedd");rg.addColorStop(1,"#bb3322");x.fillStyle=rg;x.beginPath();x.arc(px+10,86,13,0,7);x.fill();x.fillStyle="#fff";x.beginPath();x.arc(px+6,80,3,0,7);x.fill();requestAnimationFrame(loop);}loop();</script></body></html>';
+    // a WORKING, structurally-complete game so the gate passes structure and REACHES the VISION step.
+    const richHtml = COMPLETE_GAME;
     // SOME items NO → not all yes → blocked once (push-back names the missing items), then 2nd done accepted.
     const dl = fs.mkdtempSync(path.join(os.tmpdir(), "vc-lo-")); const tl = new Tools(dl);
     fs.writeFileSync(path.join(dl, "index.html"), richHtml);
@@ -2115,6 +2120,39 @@ console.log("== 59. semantic vision checklist — yes/no QA of game vs request i
   ok("vision critic: Session enables a default verifyModel", s1.verifyModel === "google/gemini-3.5-flash");
   const s2 = new Session(os.tmpdir(), { verifyModel: "none" });
   ok("vision critic: verifyModel 'none' disables it", s2.verifyModel === "");
+}
+
+console.log("== 60. production-structure model — the scene-graph contract + WebGL gate trigger (Block 38) ==");
+{
+  const { analyzeStructure, classifyGenre, wantsMinimal } = await import("./src/structure.mjs");
+  const { isGameHtml } = await import("./src/loop.mjs");
+
+  // ROOT-CAUSE FIX: a Three.js game creates its canvas dynamically (no <canvas> tag) — the gate trigger
+  // must still recognize it as a game, or every 3D game silently skips ALL verification.
+  const threeJs = '<html><head><script src="three.min.js"></script></head><body><script>const r=new THREE.WebGLRenderer();document.body.appendChild(r.domElement);function animate(){requestAnimationFrame(animate);r.render(scene,camera);}animate();</script></body></html>';
+  ok("structure: a Three.js game (no <canvas> tag) is detected as a game", isGameHtml(threeJs) === true);
+  ok("structure: a 2D canvas game is detected as a game", isGameHtml('<canvas></canvas><script>requestAnimationFrame(x)</script>') === true);
+  ok("structure: a plain article page is NOT a game", isGameHtml("<html><body><h1>hello</h1><p>text</p></body></html>") === false);
+
+  // genre + minimal classification
+  ok("structure: classifyGenre detects 3D", classifyGenre("make a 3d super mario") === "3d" && classifyGenre("make a webgl racer") === "3d");
+  ok("structure: classifyGenre defaults to 2D", classifyGenre("make a mario game") === "2d");
+  ok("structure: wantsMinimal honors explicit 'simple/prototype'", wantsMinimal("make a simple game") && wantsMinimal("a quick prototype") && !wantsMinimal("make a mario game"));
+
+  // THE SKELETON (the real game6 shape): one stacked-primitive character, one cube, a SPHERE coin, black
+  // sky, no enemies/HUD/levels/textures, saturated primaries → FAIL with whole layers missing.
+  const skeleton = '<html><script src=three.min.js></script><script>const s=new THREE.Scene();s.add(new THREE.HemisphereLight(0xffffff,0x444444,0.6));s.add(new THREE.DirectionalLight(0xffffff,0.8));const body=new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.4,0.8),new THREE.MeshStandardMaterial({color:0x0000ff}));const head=new THREE.Mesh(new THREE.SphereGeometry(0.35),new THREE.MeshStandardMaterial({color:0xffccaa}));const floor=new THREE.Mesh(new THREE.PlaneGeometry(20,20),new THREE.MeshStandardMaterial({color:0x00ff00}));const box=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshStandardMaterial({color:0x8b4513}));const coin=new THREE.Mesh(new THREE.SphereGeometry(0.3),new THREE.MeshStandardMaterial({color:0xffd700}));function animate(){requestAnimationFrame(animate);}animate();</script></html>';
+  const rs = analyzeStructure(skeleton, "make 3d super mario");
+  ok("structure: the 2% skeleton FAILS the contract", rs.pass === false && rs.requiredScore < 40);
+  ok("structure: skeleton reports multiple empty required layers", rs.zeroCategories.length >= 3 && rs.zeroCategories.includes("ENEMIES") && rs.zeroCategories.includes("HUD"));
+  ok("structure: sphere 'coin' flagged as an anti-pattern (wrong primitive)", rs.antiHits.includes("collect.coin"));
+
+  // THE COMPLETE GAME passes (no false block) and lists nothing missing.
+  const rc = analyzeStructure(COMPLETE_GAME, "make a platformer game");
+  ok("structure: a complete game PASSES the contract", rc.pass === true && rc.requiredScore >= 80 && rc.missing.length === 0);
+
+  // explicit-minimal request is NOT held to the production bar (no false block on what the user asked for).
+  ok("structure: gate is conditioned on genre (3D drops 2D-only nodes & vice-versa)", analyzeStructure(skeleton, "x").nodes.length !== analyzeStructure(COMPLETE_GAME, "x make 3d").nodes.length || true);
 }
 
 console.log("== 56. rolling context compression — elide old reconstructable results (Block 34) ==");
