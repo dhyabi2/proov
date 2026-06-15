@@ -2201,6 +2201,50 @@ console.log("== 61. level-solvability certifier — prove lock-and-key levels ar
   }
 }
 
+console.log("== 62. node servers — run a generated app on a URL:port, verify over HTTP (Block 40) ==");
+{
+  const { freePort, waitForPort, stopAllServers } = await import("./src/server.mjs");
+  const { toTarget } = await import("./src/eye.mjs");
+
+  // render targets: a bare path → file://, a URL passes through (so the eye can hit a served app).
+  ok("server: toTarget wraps a path as file:// and passes URLs through", toTarget("/a/b.html") === "file:///a/b.html" && toTarget("http://localhost:3000") === "http://localhost:3000" && toTarget("file:///x") === "file:///x");
+
+  // freePort gives a usable port; waitForPort times out fast on a closed port.
+  const fp = await freePort();
+  ok("server: freePort returns a usable TCP port", typeof fp === "number" && fp > 0 && fp < 65536);
+  ok("server: waitForPort times out on a closed port", (await waitForPort(fp, { timeoutMs: 600 })) === false);
+
+  // start a real zero-dep node http server, verify it over HTTP, then stop it (port frees).
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "srv-")); const t = new Tools(d);
+  fs.writeFileSync(path.join(d, "server.js"), 'const http=require("http");const port=process.env.PORT||3000;http.createServer((req,res)=>{if(req.url==="/api/health"){res.writeHead(200,{"content-type":"application/json"});res.end(JSON.stringify({ok:true}));}else{res.writeHead(200,{"content-type":"text/html"});res.end("<html><body><h1>Hello from Node</h1></body></html>");}}).listen(port);');
+  const s = await t.start_server({ command: "node server.js", readyTimeoutMs: 8000 });
+  ok("start_server: spawns the app and returns an http url + port", s.ok === true && /^http:\/\/localhost:\d+$/.test(s.url) && typeof s.pid === "number");
+  if (s.ok) {
+    const api = await t.http_request({ url: s.url + "/api/health" });
+    ok("http_request: hits a route → status + parsed json", api.ok === true && api.status === 200 && api.json && api.json.ok === true && /json/.test(api.contentType));
+    const { findBrowser } = await import("./src/eye.mjs");
+    if (findBrowser()) {
+      const page = t.see_page({ url: s.url });
+      ok("see_page {url}: renders a served page (post-JS visible text)", page.ok === true && /Hello from Node/.test(page.rendered || ""));
+    } else { ok("see_page {url}: (no browser — live skipped)", true); }
+    const stopped = t.stop_server({});
+    ok("stop_server: kills the server and frees the port", stopped.ok === true && (await t.http_request({ url: s.url + "/api/health", timeoutMs: 1200 })).ok === false);
+  } else {
+    ok("http_request: (server didn't start — skipped)", true);
+    ok("see_page {url}: (server didn't start — skipped)", true);
+    ok("stop_server: (server didn't start — skipped)", true);
+  }
+
+  // input validation + the destructive-command guard apply to start_server too.
+  ok("start_server: NO_COMMAND on empty / blocks destructive commands", (await t.start_server({})).error === "NO_COMMAND" && (await t.start_server({ command: "rm -rf /" })).error === "BLOCKED");
+  ok("http_request: NO_URL without a valid http url", (await t.http_request({ url: "notaurl" })).error === "NO_URL");
+  // a command that exits immediately → a clear, actionable failure (not a hang).
+  const bad = await t.start_server({ command: "node -e \"process.exit(1)\"", readyTimeoutMs: 4000 });
+  ok("start_server: a server that exits before listening fails clearly", bad.ok === false && /exited|did not start/.test(bad.error));
+  stopAllServers();
+  fs.rmSync(d, { recursive: true, force: true });
+}
+
 console.log("== 56. rolling context compression — elide old reconstructable results (Block 34) ==");
 {
   const big = (n) => "x".repeat(n);

@@ -447,6 +447,9 @@ sessions), neutral-to-slightly-worse on trivial edits.*
 - game verification: `src/structure.mjs` (production scene-graph contract) · `src/levelcert.mjs` (lock-and-key
   solvability/soft-lock certifier, vendored from esg-coreach) + the `certify_level` tool · `vendor/loft/`
   (serverless realtime-multiplayer protocol, vendored from loft-poc, for generated games)
+- node servers: `src/server.mjs` (spawn an app, wait for its port, hand back an http URL, kill on teardown)
+  + tools `start_server`/`stop_server`/`http_request`; the eye + `see_page` accept an `http://` URL so a
+  running app is verified over HTTP (not just static `file://`)
 - background/scheduled: `src/jobs.mjs` (store + duration/cron parsing) · `src/scheduler.mjs` (detached spawn + poller)
 - `bin/slivr.mjs` — main CLI · `bin/agent.mjs` — original benchmark CLI · `demo.mjs` — live side-by-side · `selftest.mjs` — deterministic (no LLM)
 - `bench/tasks.mjs` `bench/run.mjs` `bench/results.json` · `SPEC.md`

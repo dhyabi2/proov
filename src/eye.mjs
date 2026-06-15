@@ -36,6 +36,10 @@ export function findBrowser() {
   return null;
 }
 
+// A render target is either a local file path OR a URL (http/https/file). A served Node app is loaded
+// over http://localhost:PORT; a static file over file://. Chrome takes a URL either way.
+export const toTarget = (t) => (/^(https?|file):\/\//i.test(String(t)) ? String(t) : "file://" + t);
+
 const COMMON = ["--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run", "--virtual-time-budget=2500"];
 export const dumpDomArgs = (url) => [...COMMON, "--dump-dom", url];
 export const screenshotArgs = (url, outPng, { width = 1000, height = 750 } = {}) =>
@@ -52,7 +56,7 @@ export const dumpDomGLArgs = (url, budget = 9000) => [...GL_COMMON, `--virtual-t
 export function renderDom(htmlAbs) {
   const browser = findBrowser();
   if (!browser) return { ok: false, error: "no headless browser found — install Google Chrome, or set CHROME_PATH" };
-  const r = spawnSync(browser, dumpDomArgs("file://" + htmlAbs), { timeout: 30000, encoding: "utf8", maxBuffer: 16 << 20 });
+  const r = spawnSync(browser, dumpDomArgs(toTarget(htmlAbs)), { timeout: 30000, encoding: "utf8", maxBuffer: 16 << 20 });
   if (r.error || !r.stdout) return { ok: false, error: `render failed: ${r.error ? r.error.message : "no output"}` };
   return { ok: true, dom: r.stdout };
 }
@@ -62,7 +66,7 @@ export function renderDom(htmlAbs) {
 export function renderDomGL(htmlAbs, budget = 9000) {
   const browser = findBrowser();
   if (!browser) return { ok: false, error: "no headless browser found — install Google Chrome, or set CHROME_PATH" };
-  const r = spawnSync(browser, dumpDomGLArgs("file://" + htmlAbs, budget), { timeout: budget + 30000, encoding: "utf8", maxBuffer: 64 << 20 });
+  const r = spawnSync(browser, dumpDomGLArgs(toTarget(htmlAbs), budget), { timeout: budget + 30000, encoding: "utf8", maxBuffer: 64 << 20 });
   if (r.error || !r.stdout) return { ok: false, error: `render failed: ${r.error ? r.error.message : "no output"}` };
   return { ok: true, dom: r.stdout };
 }
@@ -93,7 +97,7 @@ export function renderShot(htmlAbs, outPng, opts = {}) {
   const ok = () => { try { return fs.existsSync(outPng) && fs.statSync(outPng).size > 0; } catch { return false; } };
   const browser = findBrowser();
   if (browser) {
-    const r = spawnSync(browser, screenshotArgs("file://" + htmlAbs, outPng, opts), { timeout: 30000, encoding: "utf8" });
+    const r = spawnSync(browser, screenshotArgs(toTarget(htmlAbs), outPng, opts), { timeout: 30000, encoding: "utf8" });
     if (!r.error && ok()) return { ok: true, browser: "chrome" };
   }
   try { fs.rmSync(outPng, { force: true }); } catch { /* ignore */ }

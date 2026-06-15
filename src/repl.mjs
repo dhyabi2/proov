@@ -18,6 +18,7 @@ import { listSkills, renderSkill, discoverSkills } from "./skills.mjs";
 import { spawn } from "node:child_process";
 import { listJobs } from "./jobs.mjs";
 import { runHintLine, detectRunHint, findArtifact, osOpen, launchVerb, isDemonstrateRequest } from "./run_hint.mjs";
+import { freePort, waitForPort } from "./server.mjs";
 import { detectCommands } from "./project.mjs";
 import { resumeSummary, appendJournal } from "./journal.mjs";
 
@@ -154,14 +155,22 @@ export async function startRepl({ workdir, config, palette } = {}) {
       process.stdout.write(ok ? p.green(`  ✓ opened ${hint.target} in your browser\n`) : p.yellow("  couldn't open it automatically — run it yourself with the command above\n"));
       return;
     }
-    // run / serve → hand the terminal to the program so the user can actually use it.
-    process.stdout.write(p.dim(hint.kind === "serve" ? "  starting it — press Ctrl-C to stop and return to slivr.\n" : "  running it — press Ctrl-C to stop and return.\n"));
+    // run / serve → hand the terminal to the program so the user can actually use it. For a SERVER we pick
+    // a free PORT, inject it (the app should read process.env.PORT), print the http URL, and open the
+    // browser there once it's listening — so "run it" on a Node app actually gives a live URL with a port.
+    const isServe = hint.kind === "serve";
+    let port = null, url = null;
+    if (isServe) { try { port = await freePort(); url = `http://localhost:${port}`; } catch { /* no port → run without */ } }
+    process.stdout.write(p.dim(isServe ? "  starting it — press Ctrl-C to stop and return to slivr.\n" : "  running it — press Ctrl-C to stop and return.\n"));
+    if (url) process.stdout.write(p.green("  ▶ ") + p.cyan(url) + p.dim("  (opening in your browser once it's up)\n"));
     await new Promise((resolve) => {
       inDemo = true;
       rl.pause();
       let child;
-      try { child = spawn(hint.cmd, { cwd: workdir, shell: true, stdio: "inherit" }); }
+      const env = url ? { ...process.env, PORT: String(port) } : process.env;
+      try { child = spawn(hint.cmd, { cwd: workdir, shell: true, stdio: "inherit", env }); }
       catch (e) { process.stdout.write(p.yellow(`  could not run it: ${e.message}\n`)); inDemo = false; rl.resume(); return resolve(); }
+      if (url) waitForPort(port, { timeoutMs: 20000 }).then((up) => { if (up && inDemo) osOpen(workdir, url); });
       const finish = () => { inDemo = false; rl.resume(); resolve(); };
       child.on("exit", finish);
       child.on("error", (e) => { process.stdout.write(p.yellow(`  could not run it: ${e.message}\n`)); finish(); });

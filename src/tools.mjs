@@ -21,6 +21,8 @@ import { detectCommands, describeCommands } from "./project.mjs";
 import { detectStyle, styleBrief } from "./style.mjs";
 import { playGame, playLevels, autoPlay, extractLevels } from "./gameharness.mjs";
 import { parse as parseLevel, certify as certifyLevel, recheck as recheckLevel } from "./levelcert.mjs";
+import { startServer, stopServer, listServers } from "./server.mjs";
+import { isDestructive } from "./safety.mjs";
 import { renderAsset } from "./asset.mjs";
 import * as bp from "./blueprint.mjs";
 import { resumeSummary, appendJournal } from "./journal.mjs";
@@ -267,6 +269,43 @@ export class Tools {
     }
   }
 
+  // Run a generated app as a LONG-LIVED SERVER (Node or anything that listens on $PORT) and hand back its
+  // URL — the thing run_command (execSync, blocks until exit) can't do. Spawns the command, injects a free
+  // PORT, waits for the port to listen, returns { ok, url, pid, port }. Same destructive-command guard as
+  // run_command. The server is tracked + killed on stop_server / process exit (no orphaned ports).
+  async start_server({ command, port, readyTimeoutMs } = {}) {
+    if (typeof command !== "string" || !command.trim()) return { ok: false, error: "NO_COMMAND", hint: 'pass the command to start the server, e.g. {"tool":"start_server","args":{"command":"node server.js"}} — your server must listen on process.env.PORT.' };
+    const block = isDestructive(command);
+    if (block.blocked) return { ok: false, error: "BLOCKED", why: block.why, rule: block.rule };
+    const res = await startServer({ command, cwd: this.workdir, port, readyTimeoutMs });
+    if (res.ok) { this._servers = this._servers || new Set(); this._servers.add(res.pid); }
+    return res;
+  }
+
+  // Stop a server started with start_server (its whole process group). No pid → stop them all.
+  stop_server({ pid } = {}) {
+    if (pid == null) { const all = listServers(); for (const s of all) stopServer(s.pid); if (this._servers) this._servers.clear(); return { ok: true, stopped: all.map((s) => s.pid) }; }
+    stopServer(pid); this._servers && this._servers.delete(pid);
+    return { ok: true, stopped: pid };
+  }
+
+  // Hit an HTTP endpoint and report the result — verify a running server's ROUTES (status/body/json), the
+  // server-side analog of see_page. { url, method, headers, body, timeoutMs }. Body is truncated.
+  async http_request({ url, method = "GET", headers, body, timeoutMs = 10000 } = {}) {
+    if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return { ok: false, error: "NO_URL", hint: 'pass a full url, e.g. {"tool":"http_request","args":{"url":"http://localhost:3000/api/health"}}' };
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const r = await fetch(url, { method, headers, body, signal: ctrl.signal });
+      const text = await r.text();
+      let json; try { json = JSON.parse(text); } catch { /* not json */ }
+      const hdrs = {}; for (const [k, v] of r.headers) hdrs[k] = v;
+      return { ok: r.ok, status: r.status, statusText: r.statusText, contentType: hdrs["content-type"] || "", headers: hdrs, body: text.slice(0, 4000), json };
+    } catch (e) {
+      return { ok: false, error: e.name === "AbortError" ? `request timed out after ${Math.round(timeoutMs / 1000)}s` : String(e.message || e) };
+    } finally { clearTimeout(timer); }
+  }
+
   // COMPACT edit protocol (slivr). Returns structured repair packet on failure.
   edit_file({ path: rel, anchor, replacement, op = "replace", occurrence }) {
     if (typeof rel !== "string" || !rel) return { ok: false, error: "NO_PATH", hint: 'edit_file needs a "path" (string), an "anchor" (a small VERBATIM snippet copied from the file to locate the edit), and a "replacement". Example: {"tool":"edit_file","args":{"path":"index.html","anchor":"<old lines>","replacement":"<new lines>"}}' };
@@ -490,8 +529,26 @@ export class Tools {
   // system browser. DEFAULT is text-first + cheap: returns the post-JS RENDERED visible text (catches a
   // literal "\n" on screen, a blank page, wrong text) with no vision-token cost. Pass visual:true for a
   // SCREENSHOT (attached to the model) when you need to judge layout/visual appearance.
-  see_page({ path: rel, visual } = {}) {
-    if (!rel) return { ok: false, error: "NO_PATH", hint: 'pass {"path":"index.html"} (visual:true for a screenshot)' };
+  see_page({ path: rel, url, visual } = {}) {
+    // SERVED PAGE: a running Node app (start_server) is checked over http://localhost:PORT, not file://.
+    // The static JS-syntax / file checks don't apply to a served route, so this renders the URL and
+    // reports the post-JS visible text (or a screenshot with visual:true) + a blank-page check.
+    if (typeof url === "string" && /^https?:\/\//i.test(url)) {
+      if (visual) {
+        const out = path.join(os.tmpdir(), `slivr-shot-${process.pid}-${Date.now()}.png`);
+        const r = renderShot(url, out);
+        if (!r.ok) return { ok: false, error: r.error, hint: "couldn't screenshot the URL — is the server running? try see_page (text mode) or http_request" };
+        let b64; try { b64 = fs.readFileSync(out).toString("base64"); } catch (e) { return { ok: false, error: String(e.message || e) }; }
+        try { fs.unlinkSync(out); } catch { /* */ }
+        return { ok: true, url, multimodal: { kind: "image", path: `${url} (rendered)`, mime: "image/png", dataUrl: `data:image/png;base64,${b64}` }, note: `rendered ${url} (${r.browser}) — screenshot shown to you` };
+      }
+      const d = renderDom(url);
+      if (!d.ok) return { ok: false, error: d.error, hint: "couldn't load the URL — is the server up? (start_server returns the url + port)" };
+      const text = visibleText(d.dom);
+      if (!text) return { ok: true, url, rendered: "", blank: true, note: `${url} loaded but rendered BLANK (no visible text). Check the server actually returns content for this route (http_request {url}) and the client script runs.` };
+      return { ok: true, url, rendered: text.slice(0, 4000), note: `served page at ${url} — VISIBLE rendered text (post-JS). For layout call see_page {url, visual:true}; for API routes use http_request.` };
+    }
+    if (!rel) return { ok: false, error: "NO_PATH", hint: 'pass {"path":"index.html"} for a file, or {"url":"http://localhost:PORT"} for a running server (visual:true for a screenshot)' };
     let abs; try { abs = this._resolve(rel); } catch (e) { return { ok: false, error: e.message }; }
     if (!fs.existsSync(abs)) return { ok: false, error: "FILE_NOT_FOUND", path: rel };
     if (visual) {

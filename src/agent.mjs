@@ -45,6 +45,9 @@ wastes the turn). The JSON object looks like:
   {"tool":"play_levels","args":{"path":"index.html","steps":80}}
   {"tool":"autoplay","args":{"path":"index.html","keys":["ArrowRight","ArrowUp","Space"]}}
   {"tool":"certify_level","args":{"rows":["#######","#S.k.G#","#######"]}}
+  {"tool":"start_server","args":{"command":"node server.js"}}
+  {"tool":"http_request","args":{"url":"http://localhost:3000/api/health"}}
+  {"tool":"stop_server","args":{}}
   {"tool":"delegate","args":{"task":"a focused, self-contained sub-task to run in a fresh sub-agent"}}
   {"tool":"parallel","args":{"tasks":["independent subtask A","independent subtask B"]}}
   {"tool":"pipeline","args":{"tasks":[{"id":"a","task":"do A","deps":[]},{"id":"b","task":"do B using A","deps":["a"]}]}}
@@ -240,6 +243,21 @@ MULTI-LEVEL GAMES (don't ship a single playground — build a real progression):
     changes (responds) plus a contact sheet you LOOK at. If autoplay says FROZEN (responds:false), the game
     is dead as the user would experience it — fix the real input handlers + update loop. NEVER declare a
     game done until autoplay shows it responds AND you've looked at the contact sheet and it plays right.
+
+SERVER / NODE APPS (a real app on a URL, not just a static file): when the task needs a BACKEND — an API,
+  dynamic routes, login/sessions, a database, server-side rendering, or the user asks for "a URL" / "run it
+  on a port" — build a runnable server, don't just emit a static index.html. Rules:
+  - The server MUST listen on process.env.PORT (fall back to a default only if PORT is unset). slivr injects
+    a free PORT when it starts the server, so hardcoding a port will fight the harness.
+  - Prefer a ZERO-DEPENDENCY node http server unless a framework is genuinely needed; if you DO add
+    dependencies, install them with run_command "npm install" (this may need approval) before starting.
+  - RUN + VERIFY it (this is how you know it works, like see_page for static pages):
+    1. start_server {command:"node server.js"} → returns {url, port}. (Or "npm start" / "npm run dev".)
+    2. http_request {url:"<url>/api/..."} to check API routes return the right status/JSON.
+    3. see_page {url:"<url>"} (and visual:true) to check a served HTML page renders.
+    4. Fix anything broken, re-verify, then stop_server {} when done checking.
+  - REPORT the http://localhost:PORT url in your final summary so the user can open it. A server task is NOT
+    done until start_server succeeded AND http_request/see_page show it actually serves.
 
 LOCK-AND-KEY / GRID LEVELS (prove they're winnable — don't ship soft-locks): for any game with a discrete
   grid and CONSUMABLE / IRREVERSIBLE choices — keys + doors, switches, pushable boxes (Sokoban), one-way
@@ -444,6 +462,9 @@ export function makeAgent(workdir, opts = {}) {
     play_levels: (a) => tools.play_levels(a),
     autoplay: (a) => tools.autoplay(a),
     certify_level: (a) => tools.certify_level(a),
+    start_server: (a) => tools.start_server(a),
+    stop_server: (a) => tools.stop_server(a),
+    http_request: (a) => tools.http_request(a),
     see_asset: (a) => tools.see_asset(a),
     blueprint_plan: (a) => tools.blueprint_plan(a),
     blueprint_status: (a) => tools.blueprint_status(a),
