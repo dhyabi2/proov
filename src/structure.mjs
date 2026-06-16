@@ -100,6 +100,33 @@ export function assetSourceViolation(html, task = "") {
   return null;
 }
 
+// ANIMATION-DRIVER RULE (Block 48): a 3D game with a CHARACTER must DRIVE its motion every frame — a walk
+// cycle / idle bob / jump pose via rig-part rotation or an AnimationMixer clip — not add the character as a
+// static mesh that only TRANSLATES. The static-Mario bug: he slides around but his legs/arms/head never
+// move. autoplay's "responds" is fooled by translation, so this is a separate deterministic check.
+// Returns a push-back reason or null. Gated: 3D + a character present + not minimal.
+const ANIM_DRIVERS = [
+  // three.js / klokwork skeletal-clip playback
+  /\bAnimationMixer\b/, /mixer\s*\.\s*update\s*\(/, /\bclipAction\s*\(/, /\bAnimationClip\b/, /\bAnimController\b/i,
+  // an explicit walk-cycle / animation phase advanced over time
+  /\b(walkCycle|walkPhase|gaitPhase|animPhase|animState|idleBob|strideLength|gait)\b/i,
+  // per-PART rig motion: a named body part whose rotation/position is set from a phase/sin
+  /\b(leftLeg|rightLeg|leftArm|rightArm|legL|legR|armL|armR|upperLeg|lowerLeg|thigh|shin|spine|head|torso|hips?|joint\d)\b[\s\S]{0,90}\.(rotation|quaternion|position)\b/i,
+  /getObjectByName\s*\(\s*['"](leg|arm|head|spine|hip|hand|foot|thigh|shin|torso|joint)/i,
+  /\.rotation\.[xyz]\s*=\s*[^;]*Math\.sin\s*\([^)]*(time|elapsed|clock|phase|frame|dist)/i,
+  /\.position\.y\s*=\s*[^;]*Math\.sin\s*\([^)]*(time|elapsed|clock|phase|frame)/i,
+];
+const HAS_CHARACTER = /\b(player|character|hero|mario|avatar|protagonist|enemy|goomba|koopa)\b/i;
+export function animationDriverViolation(html, task = "") {
+  const s = String(html || "");
+  if (wantsMinimal(task)) return null;
+  if (classifyGenre(task) !== "3d") return null;            // 2D sprite animation is a different check
+  const is3d = /WebGLRenderer|three(?:\.module|\.min)?\.js|\bTHREE\.|klokwork/i.test(s);
+  if (!is3d || !HAS_CHARACTER.test(s)) return null;          // no character → nothing to animate → don't block
+  if (ANIM_DRIVERS.some((re) => re.test(s))) return null;    // there is an animation driver → fine
+  return `the 3D CHARACTER appears STATIC — the code builds/loads a character but never DRIVES per-part or rigged motion (no AnimationMixer.update, no clipAction, no walk-cycle phase, no per-frame node.rotation on rig parts like legs/arms/head). A character that only TRANSLATES is the "static Mario" bug. Animate it: request the vgsds asset RIGGED (vgsds_generate {prompt, textured:true, rigged:true}) and EITHER play its clip via THREE.AnimationMixer (clipAction(...).play() + mixer.update(dt) each frame) OR getObjectByName the rig's leg/arm/head nodes and set their .rotation from a walk phase you advance from velocity (legR=A*sin(phase), legL=A*sin(phase+PI), arms counter-swing) — a walk cycle when moving, an idle bob when still. Animate enemies too.`;
+}
+
 function countMatches(html, pattern) {
   try { return (html.match(new RegExp(pattern, "gi")) || []).length; } catch { return 0; }
 }
