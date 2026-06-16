@@ -194,8 +194,11 @@ BUILDING GAMES (make them real, not just code you can't verify): the DEFAULT is 
   game that renders + responds but is missing whole layers is pushed back at done. Build, for real (artkit):
     1. ENVIRONMENT — a themed sky/background (a gradient or image, NEVER a black void), a lighting rig (3D:
        ≥2 lights incl. ambient/hemisphere), a TEXTURED ground/terrain (not one flat saturated plane).
-    2. CHARACTER — a multi-PART rig (body + head + limbs) with a FACE (eyes), proportioned, animated — never
-       a stack of plain primitives, never a single box/sphere.
+    2. CHARACTER — a multi-PART rig (body + head + limbs) with a FACE (eyes), proportioned, and ANIMATED
+       EVERY FRAME from game state — never a static mesh that only slides around. Drive the rig: a WALK CYCLE
+       while moving (legs/arms swing in counter-phase), an IDLE BOB while still, a JUMP pose airborne. The
+       done-gate REJECTS a 3D character with no animation driver or one that only translates ("static Mario").
+       Never a stack of plain primitives, never a single box/sphere.
     3. ENEMIES — ≥2 visually distinct types that MOVE/behave (patrol/chase), defeatable.
     4. COLLECTIBLES — coins as flat SPINNING DISCS (never a sphere) + ≥1 power-up; touching them changes a count.
     5. STRUCTURE — a real LEVEL of placed geometry (multiple platforms + themed props: bricks/pipes/blocks).
@@ -274,6 +277,15 @@ SERVER / NODE APPS (a real app on a URL, not just a static file): when the task 
     use artkit 3D or any other asset path for 3D — vgsds is the ONLY 3D asset source. (A bare ground plane /
     pure helper may stay a primitive.) The done-gate ENFORCES this: a 3D game that hand-rolls primitives and
     loads no .glb is pushed back. (See the vgsds-3d-assets skill.)
+  - ANIMATION: every vgsds character/enemy must be a RIGGED GLB — request it rigged (vgsds_generate {prompt,
+    textured:true, rigged:true}) and ANIMATE it from game state. Klokwork's game.advance(dt,input) gives you
+    velocity / grounded / facing; each frame map that to the rig: MOVING → advance a walk phase and either
+    mixer.update(dt) on the GLB's walk clip OR rotate the leg/arm rig nodes by ±A*sin(walkPhase) in
+    counter-phase (legR=A*sin(phase), legL=A*sin(phase+PI), arms opposite) + turn the head toward the move
+    direction; STILL → a small sin(t) head/torso idle bob; AIRBORNE → a jump/squash pose. Do this for the
+    PLAYER and every ENEMY (Goomba waddle, Koopa walk); coins/props can use the GLB's baked spin/bob clip. A
+    character that never changes shape between frames is the "static Mario" bug and is REJECTED at done
+    (autoplay's "responds" is NOT enough — the gate also checks that the rig is actually driven).
   - FRESHNESS: when STARTING a 3D game, refresh the vgsds clone (git -C <vgsds> pull --ff-only) so you use
     the latest asset generator, then ensure its MCP server is running.
 

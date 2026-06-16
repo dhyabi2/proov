@@ -22,7 +22,7 @@ import { detectStyle, styleBrief } from "./style.mjs";
 import { playGame, playLevels, autoPlay, extractLevels, autoPlayUrl, extractLevelsUrl } from "./gameharness.mjs";
 import { parse as parseLevel, certify as certifyLevel, recheck as recheckLevel } from "./levelcert.mjs";
 import { startServer, stopServer, listServers } from "./server.mjs";
-import { analyzeStructure, wantsMinimal, assetSourceViolation } from "./structure.mjs";
+import { analyzeStructure, wantsMinimal, assetSourceViolation, animationDriverViolation } from "./structure.mjs";
 import { isDestructive } from "./safety.mjs";
 import { renderAsset } from "./asset.mjs";
 import * as bp from "./blueprint.mjs";
@@ -375,6 +375,9 @@ export class Tools {
         // 3D ASSET SOURCE (Block 43): served 3D game must load vgsds GLBs, not hand-rolled primitives.
         const av = assetSourceViolation(html, task);
         if (av) return { ran: true, problem: av };
+        // ANIMATION (Block 48): a served 3D character must animate its parts, not just translate.
+        const anv = animationDriverViolation(html, task);
+        if (anv) return { ran: true, problem: anv };
         // LOCK-AND-KEY solvability — certify window.slivrLevels exposed over HTTP
         try {
           const levels = await extractLevelsUrl(url);

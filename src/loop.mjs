@@ -13,7 +13,7 @@ import { buildMultimodalContent } from "./multimodal.mjs";
 import { applyControl, controlToMessage } from "./bridge.mjs";
 import { compressContext } from "./compress.mjs";
 import { isWebGLPage } from "./webcheck.mjs";
-import { analyzeStructure, wantsMinimal, assetSourceViolation } from "./structure.mjs";
+import { analyzeStructure, wantsMinimal, assetSourceViolation, animationDriverViolation } from "./structure.mjs";
 
 // Detect a built WEB GAME in the workdir (a canvas + an animation loop / control contract), so the
 // done-gate can verify it actually PLAYS before accepting done. Returns the html path or null.
@@ -276,6 +276,9 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
                       const html = fs.readFileSync(path.join(tools.workdir, gameFile), "utf8");
                       const av = assetSourceViolation(html, task);
                       if (av) { problem = av; trace.push({ step, assetGate: clip(av, 80) }); }
+                      // ANIMATION (Block 48): a 3D character must animate its parts, not just translate
+                      // ("static Mario"). Deterministic static-driver check; one-shot push-back.
+                      else { const anv = animationDriverViolation(html, task); if (anv) { problem = anv; trace.push({ step, animGate: clip(anv, 80) }); } }
                     } catch { /* */ }
                   }
                   // LOCK-AND-KEY SOLVABILITY (Block 39): if the game OPTS IN by exposing window.slivrLevels,

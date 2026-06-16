@@ -2468,6 +2468,28 @@ console.log("== 68. runUntilDone supervisor — drive a session to completion, n
   ok("supervisor: untilDone is ON by default (continuous mode)", DEFAULTS.untilDone === true && DEFAULTS.untilDoneMaxRounds === 12);
 }
 
+console.log("== 69. animation-driver gate — a static 3D character is rejected (Block 48) ==");
+{
+  const { animationDriverViolation } = await import("./src/structure.mjs");
+  const three = "<script src=three.min.js></script>";
+  const staticChar = three + '<script>new THREE.WebGLRenderer();new GLTFLoader().load("mario.glb",function(g){player=g.scene;scene.add(player);});function loop(){player.position.x+=0.1;requestAnimationFrame(loop);}</script>';
+  const mixerAnim = three + '<script>new THREE.WebGLRenderer();new GLTFLoader().load("mario.glb",function(g){player=g.scene;mixer=new THREE.AnimationMixer(player);mixer.clipAction(g.animations[0]).play();});function loop(){mixer.update(dt);requestAnimationFrame(loop);}</script>';
+  const procAnim = three + '<script>new THREE.WebGLRenderer();var player=1;player.getObjectByName("joint4").rotation.x=0.5*Math.sin(walkPhase);</script>';
+
+  ok("anim rule: a static 3D character (only translates) is flagged", /static/i.test(animationDriverViolation(staticChar, "make a 3d mario game") || ""));
+  ok("anim rule: an AnimationMixer-driven character passes", animationDriverViolation(mixerAnim, "make a 3d mario game") === null);
+  ok("anim rule: a procedural rig-rotation character passes", animationDriverViolation(procAnim, "make a 3d mario game") === null);
+  ok("anim rule: a 2D game is not subject to the 3D animation rule", animationDriverViolation('<canvas></canvas><script>var x=c.getContext("2d");player.x+=1;</script>', "make a mario game") === null);
+  ok("anim rule: an explicit 'simple' 3D request is not blocked", animationDriverViolation(staticChar, "make a simple 3d game") === null);
+  ok("anim rule: a 3D scene with NO character is not gated", animationDriverViolation(three + '<script>new THREE.WebGLRenderer();var building=1;</script>', "make a 3d building viewer") === null);
+  // a klokwork walk-cycle phase counts as an animation driver.
+  ok("anim rule: a klokwork walk-phase character passes", animationDriverViolation(three + '<script>import {Game} from "klokwork";var player=1;var walkPhase=0;legR.rotation.x=Math.sin(walkPhase);</script>', "make a 3d game") === null);
+  // the rule is exported + wired into the gate the same way assetSourceViolation is (loop.mjs + tools).
+  const loopSrc = fs.readFileSync(path.join(process.cwd(), "src", "loop.mjs"), "utf8");
+  const toolsSrc = fs.readFileSync(path.join(process.cwd(), "src", "tools.mjs"), "utf8");
+  ok("anim gate: animationDriverViolation is wired into the static + served done-gates", /animationDriverViolation\(html, task\)/.test(loopSrc) && /animationDriverViolation\(html, task\)/.test(toolsSrc));
+}
+
 console.log("== 56. rolling context compression — elide old reconstructable results (Block 34) ==");
 {
   const big = (n) => "x".repeat(n);
