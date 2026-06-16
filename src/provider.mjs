@@ -50,7 +50,7 @@ export class Provider {
     this.model = opts.model || process.env.MODEL || "google/gemini-2.5-flash";
     this.key = opts.key || opts.apiKey || loadKey();
     this.baseUrl = (opts.baseUrl || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
-    this.timeoutMs = opts.timeoutMs ?? 30000;
+    this.timeoutMs = opts.timeoutMs ?? opts.requestTimeoutMs ?? 120000;   // generous by default — slow/reasoning models (qwen3-coder-next) shouldn't be cut off mid-generation
     this.maxRetries = opts.maxRetries ?? 2;
     this.maxTokens = opts.maxTokens ?? opts.maxTokensPerTurn ?? 4000;
     this.cacheTtl = opts.cacheTtl || "";   // "1h" → keep the system-prompt cache warm across idle REPL gaps
