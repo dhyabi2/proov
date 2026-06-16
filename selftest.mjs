@@ -2596,6 +2596,43 @@ console.log("== 72. rebrand slivr → proov — back-compat shim still reads the
   ok("rebrand: a game on the OLD window.slivrSim contract is still recognized", isGameHtml('<canvas></canvas><script>window.slivrSim={step(){}};requestAnimationFrame(x)</script>') === true && isGameHtml('<canvas></canvas><script>window.proovSim={step(){}};requestAnimationFrame(x)</script>') === true);
 }
 
+console.log("== 73. project-checks done-gate — gate ALL code on its own tests/typecheck/build (Block 54) ==");
+{
+  const { makeProjectVerify } = await import("./src/loop.mjs");
+  const pj = (d, test) => fs.writeFileSync(path.join(d, "package.json"), JSON.stringify({ name: "x", version: "1.0.0", scripts: { test } }));
+
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "pc-")); const t = new Tools(d);
+  ok("project-checks: _hasProjectChecks false with no manifest, true with a test script", new Tools(fs.mkdtempSync(path.join(os.tmpdir(), "pc0-")))._hasProjectChecks() === false && (pj(d, 'node -e "process.exit(0)"'), t._hasProjectChecks() === true));
+  pj(d, 'node -e "process.exit(1)"');
+  ok("project-checks: a FAILING test is reported as a failure", (() => { const r = t._verifyProjectChecks(); return r.ran === true && r.failures.length === 1 && r.failures[0].check === "test"; })());
+  pj(d, 'node -e "process.exit(0)"');
+  ok("project-checks: a PASSING test → no failures", t._verifyProjectChecks().failures.length === 0);
+  pj(d, "some-nonexistent-tool-xyz-12345");
+  const sk = t._verifyProjectChecks();
+  ok("project-checks: a missing toolchain is SKIPPED, not failed (degrade gracefully)", sk.failures.length === 0 && sk.skipped.length === 1);
+
+  // makeProjectVerify → the verify shape the done-gate consumes.
+  pj(d, 'node -e "process.exit(1)"');
+  ok("project-checks: makeProjectVerify reports ok:false + feedback on failure", (await makeProjectVerify(t)()).ok === false);
+  pj(d, 'node -e "process.exit(0)"');
+  ok("project-checks: makeProjectVerify ok:true when checks pass", (await makeProjectVerify(t)()).ok === true);
+
+  // FULL done-gate via runLoop: a project whose test FAILS can't be declared done (repairs, then loud stop);
+  // a passing project is accepted verified; a non-project task is unchanged (no verify gate).
+  const mkProv = () => ({ model: "m", chat: async () => ({ text: JSON.stringify({ tool: "done", args: { summary: "ok" } }), usage: {}, raw: {} }), totals: () => ({ model: "m", calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: 0 }) });
+  const dgF = fs.mkdtempSync(path.join(os.tmpdir(), "pcg-")); const tF = new Tools(dgF); pj(dgF, 'node -e "process.exit(1)"');
+  const rF = await runLoop({ provider: mkProv(), tools: tF, toolMap: {}, systemPrompt: "s", task: "x", maxSteps: 12, maxRepairs: 2 });
+  ok("project-checks gate: a FAILING-test project is NOT silently done (verified false, gate ran)", rF.verified === false && rF.trace.some((x) => x.tool === "verify" && x.ok === false) && /verification still failing/.test(rF.stopped || ""));
+  const dgP = fs.mkdtempSync(path.join(os.tmpdir(), "pcp-")); const tP = new Tools(dgP); pj(dgP, 'node -e "process.exit(0)"');
+  const rP = await runLoop({ provider: mkProv(), tools: tP, toolMap: {}, systemPrompt: "s", task: "x", maxSteps: 6 });
+  ok("project-checks gate: a PASSING-test project is accepted as verified", rP.done === true && rP.verified === true);
+  const dgN = fs.mkdtempSync(path.join(os.tmpdir(), "pcn-")); const tN = new Tools(dgN);
+  const rN = await runLoop({ provider: mkProv(), tools: tN, toolMap: {}, systemPrompt: "s", task: "x", maxSteps: 6 });
+  ok("project-checks gate: a non-project task is unchanged (no verify gate)", rN.done === true && rN.verified === null && !rN.trace.some((x) => x.tool === "verify"));
+
+  for (const x of [d, dgF, dgP, dgN]) fs.rmSync(x, { recursive: true, force: true });
+}
+
 console.log("== 56. rolling context compression — elide old reconstructable results (Block 34) ==");
 {
   const big = (n) => "x".repeat(n);

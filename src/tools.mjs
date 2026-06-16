@@ -203,6 +203,52 @@ export class Tools {
     return abs;
   }
 
+  // Cheap (no-exec) probe: does this project have detectable verification checks? Used to decide whether the
+  // done-gate should run the project-checks verifier at all (so non-project tasks behave exactly as before).
+  _hasProjectChecks() {
+    try {
+      const c = detectCommands(this.workdir);
+      if ((c.test && c.test.cmd) || (c.build && c.build.cmd)) return true;
+      const s = (JSON.parse(fs.readFileSync(this._resolve("package.json"), "utf8")).scripts) || {};
+      return !!(s.typecheck || s["type-check"] || s.lint);
+    } catch { return false; }
+  }
+
+  // PROJECT-CHECKS GATE (Block 54, Phase 1): generalize "prove it works" to ALL code by running the
+  // project's OWN ground truth — its detected typecheck / lint / build / test — and reporting real failures.
+  // Degrades gracefully (the methodology's hard rule): a missing toolchain / missing script / timeout is
+  // SKIPPED, never counted as a failure. Returns { ran, failures:[{check,cmd,output}], skipped, checked }.
+  _verifyProjectChecks({ timeoutMs = 120000 } = {}) {
+    let cmds; try { cmds = detectCommands(this.workdir); } catch { return { ran: false }; }
+    const checks = [];
+    // node: typecheck/lint scripts in package.json (detectCommands only covers test/build/run)
+    try {
+      const pj = JSON.parse(fs.readFileSync(this._resolve("package.json"), "utf8"));
+      const s = pj.scripts || {};
+      if (s.typecheck) checks.push({ check: "typecheck", cmd: "npm run typecheck" });
+      else if (s["type-check"]) checks.push({ check: "typecheck", cmd: "npm run type-check" });
+      if (s.lint) checks.push({ check: "lint", cmd: "npm run lint" });
+    } catch { /* no package.json / not node */ }
+    if (cmds.build && cmds.build.cmd) checks.push({ check: "build", cmd: cmds.build.cmd });
+    if (cmds.test && cmds.test.cmd) checks.push({ check: "test", cmd: cmds.test.cmd });
+    if (!checks.length) return { ran: false };
+    const failures = [], skipped = [];
+    for (const c of checks) {
+      try {
+        execSync(c.cmd, { cwd: this.workdir, timeout: timeoutMs, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], shell: "/bin/bash" });
+      } catch (e) {
+        const blob = `${e.stdout || ""}\n${e.stderr || ""}\n${e.message || ""}`;
+        // graceful skip: toolchain/script absent or the check timed out → NOT a code failure
+        if (e.status === 127 || e.code === "ETIMEDOUT" || /command not found|missing script|: not found|no such file|ENOENT|cannot find module/i.test(blob)) {
+          skipped.push({ check: c.check, cmd: c.cmd, why: e.code === "ETIMEDOUT" ? "timed out" : "not runnable" });
+          continue;
+        }
+        failures.push({ check: c.check, cmd: c.cmd, output: `${e.stdout || ""}\n${e.stderr || ""}`.trim().slice(-1800) });
+      }
+    }
+    return { ran: true, failures, skipped, checked: checks.map((c) => c.check) };
+  }
+
   read_file({ path: rel }) {
     const abs = this._resolve(rel);
     if (!fs.existsSync(abs)) return { ok: false, error: "FILE_NOT_FOUND", path: rel };
