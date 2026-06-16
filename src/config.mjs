@@ -30,6 +30,10 @@ export const DEFAULTS = {
   // Vision JUDGE model: critiques a built game's render against the request in the done-gate (Block 37).
   // Must be multimodal. "none"/"" disables. Default: a strong, cheap vision model.
   verifyModel: "google/gemini-3.5-flash",
+  // Per-request timeout (ms) for the model call. SLOW or reasoning models (e.g. qwen3-coder-next) and big
+  // create turns easily exceed a tight timeout — too short → the request is aborted mid-generation and
+  // RETRIED (re-sending the whole context). 120s default gives slow models room; raise for very slow ones.
+  requestTimeoutMs: 120000,
   // runUntilDone (Block 46): keep auto-continuing every task until all checklist items are done AND verified,
   // or a budget / no-forward-progress stop. ON BY DEFAULT (the agent doesn't stop half-done and wait for you
   // to retype "continue"). Set untilDone:false to revert to one-turn-at-a-time. untilDoneMaxRounds bounds the
@@ -73,6 +77,7 @@ function fromEnv(env) {
   if (v("APPROVAL")) out.approval = v("APPROVAL");
   if (v("MAX_STEPS")) { const ms = parseMaxSteps(v("MAX_STEPS")); if (ms !== null) out.maxSteps = ms; }
   if (v("MAX_TOKENS")) out.maxTokensPerTurn = Number(v("MAX_TOKENS"));
+  if (v("TIMEOUT")) { const n = Number(v("TIMEOUT")); if (Number.isFinite(n) && n > 0) out.requestTimeoutMs = n; }
   return out;
 }
 

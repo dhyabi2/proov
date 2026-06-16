@@ -2557,6 +2557,9 @@ console.log("== 71. token-cost levers — cache accounting + TTL, truncate logs,
 
   // config keys for the cache levers.
   ok("cost levers: cacheTtl is a config key", "cacheTtl" in DEFAULTS);
+  // request timeout is generous by default + configurable (so slow models like qwen3-coder-next aren't cut off).
+  const { Provider } = await import("./src/provider.mjs");
+  ok("provider: request timeout default 120s + configurable (slow models not cut off)", new Provider({}).timeoutMs === 120000 && new Provider({ requestTimeoutMs: 60000 }).timeoutMs === 60000 && new Provider({ timeoutMs: 5000, requestTimeoutMs: 60000 }).timeoutMs === 5000 && DEFAULTS.requestTimeoutMs === 120000);
 
   // 4) CANVAS DOWNSCALE: a big canvas is captured downscaled to ≤768 long edge (smaller base64 sent to model).
   const { screenshotWebGL, findBrowser } = await import("./src/eye.mjs");
