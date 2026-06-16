@@ -121,6 +121,20 @@ function clip(obj, max = 6000) {
 //   a blind one-shot agent into a self-verifying one — it never finishes "green" on a failing check.
 // The agent may write a short reasoning note before its JSON tool call. Pull that prose out (everything
 // before the tool object) so the UI can show the WHY. "" when the message is JSON-only.
+// Default done-gate verifier (Block 54, Phase 1): when the caller passed no explicit `verify`, gate `done`
+// on the project's OWN checks (typecheck/lint/build/test) — generalizing "prove it works" to all code, with
+// verifier-as-reward repair. Only used when the project HAS detectable checks (see _hasProjectChecks), so
+// non-project tasks are unchanged. Safe no-op if the tool is missing or nothing fails.
+export function makeProjectVerify(tools) {
+  return async () => {
+    if (!tools || typeof tools._verifyProjectChecks !== "function") return { ok: true };
+    let res; try { res = tools._verifyProjectChecks(); } catch { return { ok: true }; }
+    if (!res || !res.ran || !res.failures || !res.failures.length) return { ok: true };
+    const detail = res.failures.slice(0, 3).map((f) => `✗ ${f.check} (\`${f.cmd}\`):\n${f.output}`).join("\n\n");
+    return { ok: false, feedback: `the project's OWN checks FAILED — fix the CODE until they pass (do NOT delete, weaken, or skip the checks themselves):\n${detail}` };
+  };
+}
+
 export function reasoningProse(text) {
   const s = String(text || "");
   const i = s.indexOf("{");
@@ -140,6 +154,9 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
   messages.push({ role: "user", content: `TASK:\n${task}\n\nBegin. Respond with ONE JSON tool call.` });
   let turns = 0, editFailures = 0, done = false, summary = "", error = null, stopped = null;
   let verified = null, repairs = 0;   // verify-and-repair accounting
+  // When no explicit verify was passed, default to the PROJECT-CHECKS gate — but only if the project has
+  // detectable checks, so non-project tasks (and games, which have their own gate) are unchanged.
+  const effectiveVerify = verify || ((tools && typeof tools._hasProjectChecks === "function" && tools._hasProjectChecks()) ? makeProjectVerify(tools) : null);
   const trace = [];
 
   // Bail out of a stuck loop: if the model keeps emitting non-JSON / unknown-tool calls it makes no
@@ -337,9 +354,9 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
       summary = call.args?.summary || "";
       // VERIFY-AND-REPAIR gate: before accepting `done`, run the verification (if any). If it fails,
       // feed the failure back and make the model repair instead of finishing — bounded by maxRepairs.
-      if (verify) {
+      if (effectiveVerify) {
         let v;
-        try { v = await verify({ messages, summary }); }
+        try { v = await effectiveVerify({ messages, summary }); }
         catch (e) { v = { ok: false, feedback: `the verification step itself errored: ${e.message}` }; }
         trace.push({ step, tool: "verify", ok: !!v.ok, repair: repairs });
         if (onStep) onStep({ step, tool: "verify", args: {}, result: { ok: !!v.ok, note: v.ok ? "passed" : clip(v.feedback || "failed", 200) } });
