@@ -243,6 +243,7 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
   let gameGateDone = false;     // push back ONCE when done is called on a game that doesn't actually play
   let taskFidelityDone = false; // Block 58: push back ONCE when done is called but a prompt-named requirement is unreferenced
   let visualMatchTries = 0;     // Block 64: block done until the render matches a reference image per-asset ≥95% (capped)
+  let taskCheckTries = 0;       // Block 68: block done while any task's executable acceptance check fails (capped)
   let replanNudged = false;   // Block 5: nudge to re-plan once per failure streak (when a plan exists)
   // SCREENSHOT-THRASH guard (Block 59): a weak model falls into edit→see_page→edit→see_page — micro-edits
   // each followed by a visual check, burning turns while the real tasks never get built. Count visual checks
@@ -332,6 +333,21 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
         messages.push({ role: "user", content: `You called done, but ${openTasks.length} task${openTasks.length === 1 ? " is" : "s are"} still NOT completed on your checklist:\n${openTasks.slice(0, 8).map((t) => "  ☐ " + t.subject).join("\n")}\nDo NOT declare done with unfinished tasks. FINISH each one for real and VERIFY it (a game: see_page/play_levels/autoplay), then mark it completed with task_write — only THEN call done. If a listed task is genuinely already done, mark it completed first.` });
         trace.push({ step, doneTaskNudge: openTasks.length });
         continue;
+      }
+      // PER-TASK ACCEPTANCE GATE (Block 68, from DTP — "never stack work on an unmet criterion"): a task can
+      // carry an executable `check` (its ground-truth acceptance criterion). Don't accept done while any task's
+      // check FAILS — re-run them and push back with the failing ones. Ground-truth (runs the command), bounded
+      // (≤3) so a flaky/slow check can't deadlock. Dormant when no task carries a check.
+      if (taskCheckTries < 3 && tools && typeof tools._verifyTaskChecks === "function") {
+        let tc = null;
+        try { tc = tools._verifyTaskChecks(); } catch { tc = null; }
+        if (tc && tc.failures && tc.failures.length) {
+          taskCheckTries++; noProgress = 0;
+          const punch = tc.failures.slice(0, 6).map((f) => `  ✗ ${f.subject}: ${f.reason}`).join("\n");
+          messages.push({ role: "user", content: `You called done, but ${tc.failures.length} task acceptance check${tc.failures.length === 1 ? "" : "s"} FAIL:\n${punch}\nA task's \`check\` is its ground-truth acceptance criterion — fix the code so each check passes (exit 0), then call done.` });
+          trace.push({ step, taskCheckGate: tc.failures.length });
+          continue;
+        }
       }
       // TASK-FIDELITY GATE (Block 58): the other gates prove the artifact WORKS; this proves it did what was
       // ASKED. If the prompt explicitly NAMED something to use (a github repo, a quoted library) and that name

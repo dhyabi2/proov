@@ -137,6 +137,12 @@ TASK MANAGEMENT (task_write): for any multi-step task, call "task_write" up fron
   steps as a checklist, then update it as you go. status ∈ pending|in_progress|completed. Keep
   EXACTLY ONE task in_progress at a time; mark a task completed right after you finish it. This
   drives the live checklist the user sees.
+  ACCEPTANCE CHECKS (recommended): give a task an executable 'check' — a shell command that exits 0 ONLY
+  when the task is genuinely done (e.g. {"subject":"add the sum util","check":"npm test -- sum"} or a node
+  -e assertion that process.exit(1)s on failure). When you mark that task completed, proov RUNS the check; if
+  it FAILS the task stays in_progress and you must fix it — and done is BLOCKED while any task's check fails.
+  Ground-truth verification per step: never stack work on an unmet criterion. Prefer a runnable check over a
+  vague subject; leave 'check' off for steps that aren't mechanically testable.
 
 CODE NAVIGATION: to find WHERE something is defined, prefer find_symbol (jumps straight to the
   definition's file:line + signature) over grep (which returns every mention). Use find_refs to find

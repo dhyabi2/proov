@@ -102,9 +102,13 @@ export class Tools {
     return { ok: true, steps: clean, revisions: this.plan.revisions, note: "Plan revised." };
   }
 
-  // task_write (proov): replace/update the live task checklist. tasks = [{id?, subject, status}],
-  // status ∈ pending|in_progress|completed. Items WITH a matching id update in place; items without
-  // an id (or a new id) are appended/created. Keep exactly one task in_progress at a time.
+  // task_write (proov): replace/update the live task checklist. tasks = [{id?, subject, status, check?}],
+  // status ∈ pending|in_progress|completed. Items WITH a matching id update in place; items without an id
+  // (or a new id) are appended/created. Keep exactly one task in_progress at a time.
+  // ACCEPTANCE CHECK (Block 68, from DTP's "never stack work on an unmet criterion"): a task may carry an
+  // executable `check` (a shell command — its ground-truth acceptance criterion). When a task TRANSITIONS to
+  // completed and has a check, proov RUNS it (exit 0 = pass); if it fails, the task is NOT marked completed
+  // (kept in_progress) and the failure is reported — so the agent fixes it before moving on.
   task_write({ tasks } = {}) {
     if (!Array.isArray(tasks)) return { ok: false, error: "NO_TASKS", hint: 'Pass tasks: [{subject, status}]' };
     const VALID = new Set(["pending", "in_progress", "completed"]);
@@ -112,28 +116,77 @@ export class Tools {
     let nextId = this.tasks.reduce((m, t) => Math.max(m, Number(t.id) || 0), 0);
     const order = [];
     const seen = new Set();
+    const checkFails = [];
+    const completeWithCheck = (t, prevStatus, check) => {
+      // run the acceptance check only on the transition INTO completed (not on every re-write).
+      if (!check || prevStatus === "completed") return "completed";
+      const r = this._runTaskCheck(check);
+      if (r.pass || r.skipped) return "completed";
+      checkFails.push({ subject: t.subject, check, reason: r.reason });
+      return "in_progress";   // criterion unmet → don't let it be marked done
+    };
     for (const raw of tasks) {
       if (!raw || typeof raw !== "object") continue;
       const subject = String(raw.subject ?? "").trim();
       let status = String(raw.status ?? "pending").trim();
       if (!VALID.has(status)) status = "pending";
+      const check = raw.check != null ? String(raw.check).trim() : null;
       let id = raw.id != null ? String(raw.id) : null;
       if (id && byId.has(id)) {
         const ex = byId.get(id);
+        const prev = ex.status;
         if (subject) ex.subject = subject;
-        ex.status = status;
+        if (check != null) ex.check = check || undefined;
+        ex.status = status === "completed" ? completeWithCheck(ex, prev, ex.check) : status;
         if (!seen.has(id)) { order.push(ex); seen.add(id); }
       } else {
         if (!subject) continue;
         id = id || String(++nextId);
         const t = { id, subject, status };
+        if (check) t.check = check;
+        if (status === "completed") t.status = completeWithCheck(t, "pending", t.check);
         byId.set(id, t);
         if (!seen.has(id)) { order.push(t); seen.add(id); }
       }
     }
     // task_write replaces the list with exactly what was passed (in the given order).
     this.tasks = order;
-    return { ok: true, tasks: this.tasks.map(t => ({ ...t })) };
+    const out = { ok: true, tasks: this.tasks.map(t => ({ ...t })) };
+    if (checkFails.length) {
+      out.checkFailed = checkFails;
+      out.note = `${checkFails.length} task${checkFails.length === 1 ? "" : "s"} could NOT be completed — the acceptance check failed (kept in_progress):\n${checkFails.map(f => `  ✗ ${f.subject}: ${f.reason}`).join("\n")}\nFix the code so the check passes (exit 0), then mark it completed again.`;
+    }
+    return out;
+  }
+
+  // Run a task's acceptance `check` shell command as a GROUND-TRUTH gate (Block 68): exit 0 = pass. Read-only
+  // by intent; a destructive command is refused, a missing tool is SKIPPED (graceful, like project-checks),
+  // and it's time-bounded. Returns { pass, skipped?, reason }.
+  _runTaskCheck(cmd) {
+    if (typeof cmd !== "string" || !cmd.trim()) return { pass: true, skipped: true };
+    if (isDestructive(cmd).blocked) return { pass: false, reason: `refused to run a destructive check command: ${cmd}` };
+    try {
+      const out = execSync(cmd, { cwd: this.workdir, stdio: ["ignore", "pipe", "pipe"], timeout: 30000, encoding: "utf8" });
+      return { pass: true, reason: `passed${out && out.trim() ? ": " + out.trim().slice(0, 100) : ""}` };
+    } catch (e) {
+      if (e.code === "ETIMEDOUT") return { pass: false, reason: "check timed out (30s)" };
+      if (e.status === 127 || /not found|command not found|no such file/i.test(String(e.stderr || e.message || ""))) return { pass: true, skipped: true, reason: "check tool not found — skipped" };
+      const err = (e.stderr || e.stdout || e.message || "").toString().trim();
+      return { pass: false, reason: `check failed: ${err.slice(0, 160)}` };
+    }
+  }
+
+  // Re-run every task's acceptance check at done-time (Block 68): the backstop that nothing marked complete
+  // regressed. Returns { checked, failures:[{subject,check,reason}] } or null when no task carries a check.
+  _verifyTaskChecks() {
+    const withChecks = (this.tasks || []).filter(t => t && typeof t.check === "string" && t.check.trim());
+    if (!withChecks.length) return null;
+    const failures = [];
+    for (const t of withChecks) {
+      const r = this._runTaskCheck(t.check);
+      if (!r.pass && !r.skipped) failures.push({ subject: t.subject, check: t.check, reason: r.reason });
+    }
+    return { checked: withChecks.length, failures };
   }
 
   // Visual richness of a game's CANVAS (not the surrounding page) — captures the canvas via toDataURL

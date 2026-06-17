@@ -2748,6 +2748,50 @@ console.log("== 68l. design-first preflight — DRAW the reference before coding
   ok("preflight: designFirst ON by default", CFG2.designFirst === true);
 }
 
+console.log("== 68m. per-task acceptance checks — never stack work on an unmet criterion (Block 68) ==");
+{
+  const { Tools } = await import("./src/tools.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proov-tc-"));
+  // a PASSING check (exit 0) completes the task.
+  const ta = new Tools(dir);
+  let r = ta.task_write({ tasks: [{ id: "1", subject: "a", status: "completed", check: "true" }] });
+  ok("taskcheck: a passing check completes the task", ta.tasks[0].status === "completed" && !r.checkFailed);
+  // a FAILING check keeps it in_progress + reports it (can't mark done on an unmet criterion).
+  const tb = new Tools(dir);
+  r = tb.task_write({ tasks: [{ id: "1", subject: "b", status: "completed", check: "false" }] });
+  ok("taskcheck: a failing check keeps the task in_progress + reports it", tb.tasks[0].status === "in_progress" && r.checkFailed && r.checkFailed.length === 1);
+  // a MISSING check tool is skipped (graceful), so it doesn't false-block.
+  const tc = new Tools(dir);
+  r = tc.task_write({ tasks: [{ id: "1", subject: "c", status: "completed", check: "proov_nonexistent_cmd_zzz --x" }] });
+  ok("taskcheck: a missing check tool is skipped (completes, graceful)", tc.tasks[0].status === "completed" && !r.checkFailed);
+  // a DESTRUCTIVE check command is refused.
+  const td = new Tools(dir);
+  r = td.task_write({ tasks: [{ id: "1", subject: "d", status: "completed", check: "rm -rf /" }] });
+  ok("taskcheck: a destructive check command is refused", td.tasks[0].status === "in_progress" && /destructive/.test((r.checkFailed && r.checkFailed[0].reason) || ""));
+  // the check runs only on the TRANSITION to completed (not re-run every write).
+  const te = new Tools(dir);
+  te.tasks = [{ id: "1", subject: "e", status: "completed", check: "false" }];   // already completed
+  r = te.task_write({ tasks: [{ id: "1", subject: "e", status: "completed", check: "false" }] });
+  ok("taskcheck: an already-completed task is not re-checked on rewrite", te.tasks[0].status === "completed" && !r.checkFailed);
+  // _verifyTaskChecks: finds failing checks; null when no task carries one.
+  const tf = new Tools(dir); tf.tasks = [{ id: "1", subject: "x", status: "completed", check: "false" }];
+  ok("taskcheck: _verifyTaskChecks finds failing checks", (tf._verifyTaskChecks() || {}).failures?.length === 1);
+  const tg = new Tools(dir); tg.tasks = [{ id: "1", subject: "y", status: "completed" }];
+  ok("taskcheck: _verifyTaskChecks → null when no checks", tg._verifyTaskChecks() === null);
+
+  // DONE-GATE: blocked while a task's check fails (bounded 3), accepted when it passes.
+  const run = async (tasks, n = 6) => {
+    const tools = new Tools(dir); tools.tasks = tasks;
+    let i = 0; const script = Array(n).fill('{"tool":"done","args":{"summary":"d"}}');
+    const provider = { chat: async () => ({ text: script[i++] ?? '{"tool":"done","args":{}}', usage: {}, raw: {} }), totals: () => ({ cost: 0 }) };
+    return runLoop({ provider, tools, toolMap: {}, systemPrompt: "s", task: "do the math", maxSteps: 8, designFirst: false });
+  };
+  const rFail = await run([{ id: "1", subject: "z", status: "completed", check: "false" }]);
+  ok("taskcheck gate: done blocked while a task check fails (bounded 3)", rFail.trace.filter((s) => s.taskCheckGate).length === 3);
+  const rPass = await run([{ id: "1", subject: "ok", status: "completed", check: "true" }], 1);
+  ok("taskcheck gate: a passing check → done accepted", rPass.done && !rPass.trace.some((s) => s.taskCheckGate));
+}
+
 console.log("== 69. animation-driver gate — a static 3D character is rejected (Block 48) ==");
 {
   const { animationDriverViolation } = await import("./src/structure.mjs");
