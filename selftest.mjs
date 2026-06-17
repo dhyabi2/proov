@@ -2478,6 +2478,24 @@ console.log("== 68. runUntilDone supervisor — drive a session to completion, n
   const { DEFAULTS } = await import("./src/config.mjs");
   ok("supervisor: untilDone is ON by default (continuous mode)", DEFAULTS.untilDone === true && DEFAULTS.untilDoneMaxRounds === 12);
 
+  // HONEST VERIFICATION on exit (Block 70): the report carries verifiedStatus pass/fail/unverified.
+  const mkV = (turns, toolsExtra) => { let i = 0; const tasks = []; return { tools: { tasks, ...toolsExtra }, totals: () => ({ cost: i * 0.01 }), runTurn: async () => { const r = turns[Math.min(i, turns.length - 1)](tasks, i); i++; return r; } }; };
+  const doneA = (t) => { t.length = 0; t.push({ status: "completed", subject: "A" }); return { done: true, verified: null, trace: [] }; };
+  // a failing task-check → NOT success, verifiedStatus 'fail' (never silently "done")
+  const rFail = await runUntilDone(mkV([doneA], { _verifyTaskChecks: () => ({ checked: 1, failures: [{ subject: "A", reason: "check failed" }] }) }), "build", { maxRounds: 4, noProgressStop: 3 });
+  ok("verify-on-exit: a failing task-check → verifiedStatus 'fail', not 'success'", rFail.verifiedStatus === "fail" && rFail.verified === false && rFail.outcome !== "success");
+  // done with NO hard check → honest 'unverified' (success outcome, but not claimed verified)
+  const rNone = await runUntilDone(mkV([doneA], {}), "build", { maxRounds: 4 });
+  ok("verify-on-exit: done with NO hard check → 'unverified' (honest)", rNone.outcome === "success" && rNone.verifiedStatus === "unverified");
+  // a passing task-check → 'pass'
+  const rPass = await runUntilDone(mkV([doneA], { _verifyTaskChecks: () => ({ checked: 1, failures: [] }) }), "build", { maxRounds: 4 });
+  ok("verify-on-exit: a passing task-check → verifiedStatus 'pass'", rPass.outcome === "success" && rPass.verifiedStatus === "pass" && rPass.verification.ran.includes("task-checks"));
+  // QUALITY-TRIGGERED ESCALATION (Block 71): a FAILED verification escalates to strongModel (not just stuck)
+  let escalated = false;
+  const sEsc = { tools: { tasks: [] }, provider: { model: "cheap/x" }, totals: () => ({ cost: 0 }), runTurn: async () => ({ done: false, verified: false, stopped: "v", trace: [] }) };
+  await runUntilDone(sEsc, "build", { maxRounds: 3, noProgressStop: 9, strongModel: "strong/x", onRound: ({ escalateTo }) => { if (escalateTo) escalated = true; } });
+  ok("quality escalation: a FAILED verification escalates to the strong model", escalated);
+
   // costCap:0 means NO cap (matches the REPL's untilDoneCostCap semantics) — must NOT stop after round 1.
   // Regression for the eval-harness bug: a bare `costCap ?? Infinity` treated 0 as a literal $0 cap.
   const s0 = mk([(t) => { t.length = 0; t.push({ status: "in_progress", subject: "A" }); return { done: false, stopped: "ran out", trace: [] }; }, (t) => { t[0].status = "completed"; return { done: true, verified: null, trace: [] }; }]);
@@ -2689,9 +2707,11 @@ console.log("== 68k. beyond-the-frame — the reference is a 1% sample, build th
   const oneScreen = '<canvas></canvas><script>function loop(){requestAnimationFrame(loop)}loop()</script>';
   ok("beyond-frame: a single-screen game → flagged as a 1% sample", /1% SAMPLE/.test(beyondFrameViolation(oneScreen, "make a platformer") || ""));
   ok("beyond-frame: multiple levels → ok", beyondFrameViolation(oneScreen + '<script>const levels=[{a:1},{b:2}];</script>', "platformer") === null);
-  ok("beyond-frame: game states (win/lose) → ok", beyondFrameViolation(oneScreen + '<script>state="gameover";</script>', "platformer") === null);
-  ok("beyond-frame: progression (nextLevel) → ok", beyondFrameViolation(oneScreen + '<script>function nextLevel(){}</script>', "platformer") === null);
+  ok("beyond-frame: ≥2 distinct game states → ok", beyondFrameViolation(oneScreen + '<script>let scene="menu"; if(dead)scene="gameover";</script>', "platformer") === null);
+  ok("beyond-frame: progression (nextLevel call) → ok", beyondFrameViolation(oneScreen + '<script>function nextLevel(){}</script>', "platformer") === null);
   ok("beyond-frame: a non-game page → not flagged", beyondFrameViolation('<div>hello</div>', "a landing page") === null);
+  // DE-GAMED (Block 72): a single decorative keyword no longer passes — needs real structural evidence.
+  ok("beyond-frame de-gamed: one lone state keyword does NOT pass", /1% SAMPLE/.test(beyondFrameViolation(oneScreen + '<script>const x="gameover";</script>', "platformer") || ""));
 
   // GATE: per-asset match passed, but the build is one screen → done blocked until the full game exists.
   const run = async (tools, n = 4) => {

@@ -45,6 +45,38 @@ export function continuationFor(res, open, forceful) {
   return `${why}${push}Keep going and finish the task.${openList}${tail}`;
 }
 
+// FINAL VERIFICATION (Block 70): run the DETERMINISTIC, re-runnable checks (per-task acceptance checks +
+// project typecheck/lint/build/test) on whatever exists at exit — so EVERY outcome (success or stop) carries
+// an honest verdict, not a silent stop, and "done" never reads as "verified" unless a real check passed.
+// Returns { status:'pass'|'fail'|'none', ran:[], failures:[], skipped:[] }.
+async function finalVerify(session, res) {
+  const t = session && session.tools;
+  if (!t) return { status: "none", ran: [], failures: [], skipped: [] };
+  const ran = [], failures = [], skipped = [];
+  try {
+    if (typeof t._verifyTaskChecks === "function") {
+      const tc = t._verifyTaskChecks();
+      if (tc) { ran.push("task-checks"); for (const f of tc.failures || []) failures.push(`task "${f.subject}": ${f.reason}`); }
+    }
+  } catch { /* */ }
+  if (res && res.verified === true) {
+    ran.push("project-checks");   // the in-loop verify already ran them clean this round — don't re-run
+  } else {
+    try {
+      if (typeof t._hasProjectChecks === "function" && t._hasProjectChecks() && typeof t._verifyProjectChecks === "function") {
+        const pc = await t._verifyProjectChecks({});
+        if (pc && pc.ran) {
+          ran.push("project-checks");
+          for (const f of pc.failures || []) failures.push(`${f.check} failed`);
+          for (const s of pc.skipped || []) skipped.push(`${s.check} (${s.why})`);
+        }
+      }
+    } catch { /* */ }
+  }
+  const status = !ran.length ? "none" : (failures.length ? "fail" : "pass");
+  return { status, ran, failures, skipped };
+}
+
 function report(outcome, rounds, res, open, totals, detail) {
   return {
     outcome,                                   // 'success' | 'budget' | 'dead_end' | 'aborted' | 'error'
@@ -78,7 +110,28 @@ export async function runUntilDone(session, task, opts = {}) {
   const openOf = () => (session.tools && Array.isArray(session.tools.tasks)) ? session.tools.tasks.filter((t) => t.status !== "completed") : [];
   const doneCountOf = () => (session.tools && Array.isArray(session.tools.tasks)) ? session.tools.tasks.filter((t) => t.status === "completed").length : 0;
   const totalsOf = () => (typeof session.totals === "function" ? session.totals() : { cost: 0 });
-  const finished = (r) => !!(r && r.done) && r.verified !== false && openOf().length === 0;
+  // Cheap, re-runnable ground-truth: per-task acceptance checks must still pass. This de-bounds the inner
+  // task-check gate (Block 68 caps its push-backs at 3) at the supervisor level (Block 70) — the run won't be
+  // declared SUCCESS while a task's check fails, even if the inner gate gave up. The maxRounds/no-progress
+  // brakes still stop it (as 'dead_end'/'budget' + verifiedStatus 'fail'), so it can't loop forever.
+  const taskChecksOk = () => { try { const t = session.tools; const tc = t && typeof t._verifyTaskChecks === "function" ? t._verifyTaskChecks() : null; return !tc || !(tc.failures && tc.failures.length); } catch { return true; } };
+  const finished = (r) => !!(r && r.done) && r.verified !== false && openOf().length === 0 && taskChecksOk();
+
+  // Wrap every exit with an honest verification verdict (Block 70). verifiedStatus is the truthful label the
+  // REPL shows: 'pass' (a real check confirmed it) · 'fail' (a check failed) · 'unverified' (done accepted but
+  // NO hard check ran — e.g. only the soft, gameable gates, or checks were skipped for a missing toolchain).
+  const finish = async (outcome, rounds, res, open, totals, detail) => {
+    const rep = report(outcome, rounds, res, open, totals, detail);
+    let fv = null;
+    try { fv = await finalVerify(session, res); } catch { fv = null; }
+    rep.verification = fv;
+    rep.verifiedStatus = fv && fv.status === "fail" ? "fail"
+      : (fv && fv.status === "pass") ? "pass"
+      : (res && res.verified === true) ? "pass"
+      : "unverified";
+    if (rep.verifiedStatus === "fail") rep.verified = false;
+    return rep;
+  };
 
   let res = await session.runTurn(task, turnOpts);
   let rounds = 1, noProgress = 0, bestDone = doneCountOf(), lastFp = stopFingerprint(res);
@@ -88,23 +141,27 @@ export async function runUntilDone(session, task, opts = {}) {
     const totals = totalsOf();
     onRound({ round: rounds, res, open: open.length, cost: totals.cost, noProgress });
 
-    if (res.aborted) return report("aborted", rounds, res, open, totals);
-    if (res.error) return report("error", rounds, res, open, totals, res.error);
-    if (finished(res)) return report("success", rounds, res, open, totals);
-    if (rounds >= maxRounds) return report("budget", rounds, res, open, totals, `reached the ${maxRounds}-round cap with work remaining`);
-    if (totals.cost >= costCap) return report("budget", rounds, res, open, totals, `reached the $${costCap} cost cap with work remaining`);
+    if (res.aborted) return await finish("aborted", rounds, res, open, totals);
+    if (res.error) return await finish("error", rounds, res, open, totals, res.error);
+    if (finished(res)) return await finish("success", rounds, res, open, totals);
+    if (rounds >= maxRounds) return await finish("budget", rounds, res, open, totals, `reached the ${maxRounds}-round cap with work remaining`);
+    if (totals.cost >= costCap) return await finish("budget", rounds, res, open, totals, `reached the $${costCap} cost cap with work remaining`);
 
     // NO-FORWARD-PROGRESS: the checklist didn't advance AND the turn ended the same way as last round.
     const fp = stopFingerprint(res), advanced = doneCountOf() > bestDone;
     if (!advanced && fp === lastFp) noProgress++; else noProgress = 0;
-    if (noProgress >= noProgressStop) return report("dead_end", rounds, res, open, totals, `no forward progress for ${noProgress} rounds (stuck: ${fp})`);
+    if (noProgress >= noProgressStop) return await finish("dead_end", rounds, res, open, totals, `no forward progress for ${noProgress} rounds (stuck: ${fp})`);
     bestDone = Math.max(bestDone, doneCountOf());
     lastFp = fp;
 
     // CRITICAL-ONLY ESCALATION: when the cheap default model is STUCK (no-progress ticking, or it just hit
     // a fail/spin), run ONE round on the strong model to break through, then revert. This is the ~1% of
     // turns where the expensive model earns its cost; the rest stay on the cheap default.
-    const stuck = noProgress > 0 || !!stuckMarker(res);
+    // QUALITY-TRIGGERED ESCALATION (Block 71): use the strong model not only when STUCK (liveness) but when the
+    // result is WEAK — a verification FAILED, or a gate kept pushing back this round. A confidently-wrong cheap
+    // result is exactly what the cheap model can't fix on its own.
+    const gateBounced = Array.isArray(res.trace) && res.trace.some((x) => x.gameGate || x.servedGate || x.visualMatchGate || x.taskCheckGate || x.beyondFrame);
+    const stuck = noProgress > 0 || !!stuckMarker(res) || res.verified === false || gateBounced;
     let prevModel = null;
     if (stuck && strongModel && session.provider && session.provider.model && session.provider.model !== strongModel) {
       prevModel = session.provider.model; session.provider.model = strongModel;

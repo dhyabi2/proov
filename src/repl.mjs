@@ -377,9 +377,21 @@ export async function startRepl({ workdir, config, palette } = {}) {
             },
           });
           res = rep.last || {};
-          // quiet on a clean single-round finish (a plain question / first-try success); speak up otherwise.
-          if (rep.outcome === "success") { if (explicitFinish || rep.rounds > 1) process.stdout.write(p.green(`✓ finished — all tasks done & verified in ${rep.rounds} round(s) · $${(rep.cost || 0).toFixed(4)}\n`)); }
-          else process.stdout.write(p.yellow(`∅ stopped after ${rep.rounds} round(s) — ${rep.outcome}${rep.detail ? `: ${rep.detail}` : ""}.${rep.openTasks.length ? ` ${rep.openTasks.length} left: ${rep.openTasks.slice(0, 5).join("; ")}` : ""}\n`));
+          // HONEST verification verdict (Block 70): say 'verified' ONLY when a real check confirmed it; an
+          // accepted-but-unchecked done reads as ⚠ UNVERIFIED, and a failing check reads ✗ — never silent.
+          const v = rep.verification || {};
+          const vran = (v.ran || []).join(", ");
+          const vmsg = rep.verifiedStatus === "pass" ? p.green(`verified ✓${vran ? ` (${vran})` : ""}`)
+            : rep.verifiedStatus === "fail" ? p.red(`checks FAILED ✗ — ${(v.failures || []).slice(0, 3).join("; ") || vran}`)
+            : p.yellow(`UNVERIFIED ⚠ — no hard check ran${(v.skipped || []).length ? ` (skipped: ${v.skipped.join(", ")})` : ""}`);
+          // quiet on a clean single-round VERIFIED finish; speak up on anything else.
+          if (rep.outcome === "success" && rep.verifiedStatus === "pass") {
+            if (explicitFinish || rep.rounds > 1) process.stdout.write(p.green(`✓ finished — all tasks done in ${rep.rounds} round(s) · $${(rep.cost || 0).toFixed(4)} · `) + vmsg + "\n");
+          } else if (rep.outcome === "success") {
+            process.stdout.write(p.yellow(`⚠ finished in ${rep.rounds} round(s) · $${(rep.cost || 0).toFixed(4)} · `) + vmsg + "\n");
+          } else {
+            process.stdout.write(p.yellow(`∅ stopped after ${rep.rounds} round(s) — ${rep.outcome}${rep.detail ? `: ${rep.detail}` : ""} · `) + vmsg + (rep.openTasks.length ? p.yellow(` · ${rep.openTasks.length} left: ${rep.openTasks.slice(0, 5).join("; ")}`) : "") + "\n");
+          }
         } else {
           res = await session.runTurn(taskToRun, { onStep, onToolStart, onThinking, beforeTool, signal: currentAbort.signal });
         }

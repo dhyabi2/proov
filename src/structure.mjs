@@ -219,10 +219,17 @@ export function beyondFrameViolation(html, task = "") {
   const s = String(html || "");
   const isGame = /<canvas/i.test(s) && /(requestAnimationFrame|proovSim|slivrSim|getContext\s*\()/i.test(s);
   if (!isGame) return null;
-  const hasProgression = /\blevels?\s*[=:]\s*\[[^\]]*[},][^\]]*\{/.test(s)
-    || /(nextlevel|loadlevel|advancelevel|currentlevel|level\s*\+\+|level\s*=\s*level\s*\+|stage\s*\+\+|\bwave\s*\+\+|nextwave|new\s+level)/i.test(s);
-  const hasStates = /(game\s*over|gameover|you\s*win|victory|defeat|you\s*lose|game\s*won|title\s*screen|main\s*menu|start\s*screen|pause\s*screen)/i.test(s)
-    || /(screen|state|scene|mode|phase)\s*[=:]\s*['"](menu|title|start|win|won|lose|lost|gameover|game_over|victory|defeat|play|playing|paused)['"]/i.test(s);
+  // DE-GAMED (Block 72): require STRUCTURAL evidence, not a bare keyword a lazy model can drop in. Progression
+  // = a real multi-element level array (≥2 objects/strings) OR an indexed advance into a levels collection.
+  // States = ≥2 DISTINCT game-state strings assigned (so a single `state="gameover"` decoration doesn't pass).
+  const hasProgression =
+    /\blevels?\s*[=:]\s*\[\s*[\[{][\s\S]*?[}\]]\s*,\s*[\[{]/.test(s)                 // levels = [ {..}, {..} ] (≥2)
+    || /\blevels?\s*[=:]\s*\[\s*["'][^"']+["']\s*,\s*["']/.test(s)                    // levels = [ "..", ".." ]
+    || /(loadlevel|load_level|advancelevel|nextlevel|gotolevel)\s*\(/i.test(s)        // a level-advance CALL
+    || (/\blevels?\b/i.test(s) && /\b(level|stage|wave|currentlevel|levelindex)\s*(\+\+|\+=|=\s*[a-z0-9_.]+\s*\+)/i.test(s)); // index into levels[] AND advance it
+  const stateStrings = new Set((s.match(/(?:screen|state|scene|mode|phase|gamestate)\s*[=:]\s*["'](menu|title|start|playing|play|win|won|lose|lost|gameover|game_over|victory|defeat|paused|pause)["']/gi) || [])
+    .map((m) => (m.match(/["'](\w+)["']/) || [])[1]));
+  const hasStates = stateStrings.size >= 2;
   if (hasProgression || hasStates) return null;
   return `this looks like only the PICTURED scene — a single screen. The reference image is a ~1% SAMPLE (one screenshot of one moment), NOT the whole game. Build the FULL game beyond the frame: multiple levels/areas, a start/menu screen, and win + lose states — the complete loop — in the SAME style as the sample. Explore what a complete version of this needs and build it, then finish.`;
 }
