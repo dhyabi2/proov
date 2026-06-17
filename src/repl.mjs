@@ -433,6 +433,18 @@ export async function startRepl({ workdir, config, palette } = {}) {
                 }
               } catch { /* if the check itself fails, fall back to offering */ }
             }
+            // SERVED app (Block 60): same bar — don't offer to START a server whose page doesn't actually
+            // serve/render. Start it, fetch the entry, broken/blank-check, stop — symmetric to the static
+            // check above. The agent claiming "fully playable" is NOT enough; verify before offering to run.
+            if (okToOpen && hint.kind === "serve" && typeof session.tools._verifyServedApp === "function") {
+              try {
+                const sv = await session.tools._verifyServedApp();
+                if (sv && sv.ran && sv.problem) {
+                  okToOpen = false;
+                  process.stdout.write(p.yellow(`  ⚠ not starting — the served app isn't working yet:\n`) + p.dim("    " + sv.problem) + "\n" + p.dim("    ask me to fix it, then it'll offer to run.\n"));
+                }
+              } catch { /* check couldn't run (no browser) → fall back to offering */ }
+            }
             if (okToOpen) await demonstrate(hint);
             else if (res.stopped) process.stdout.write(p.dim("  (the turn stopped before finishing — the page is likely incomplete; fix the errors above first)\n"));
           }

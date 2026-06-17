@@ -2558,6 +2558,22 @@ console.log("== 68d. screenshot-thrash guard — build, don't eyeball every edit
   ok("thrash: no open tasks → no nudge", !r3.trace.some((s) => s.visualThrash));
 }
 
+console.log("== 68e. served-app run-offer gate — verify before offering to start (Block 60) ==");
+{
+  const { Tools } = await import("./src/tools.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proov-served-"));
+  const t = new Tools(dir);
+  ok("served-gate: _verifyServedApp exists", typeof t._verifyServedApp === "function");
+  // a plain dir with NO startable server → ran:false (never blocks a non-server project's run offer).
+  const r = await t._verifyServedApp();
+  ok("served-gate: no startable server → ran:false (doesn't block the offer)", r && r.ran === false);
+  // a project WITH a start script but a server that fails to listen → ran:true + a problem (offer blocked).
+  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "x", scripts: { start: "node server.js" } }));
+  fs.writeFileSync(path.join(dir, "server.js"), "process.exit(1);"); // exits before listening
+  const r2 = await t._verifyServedApp();
+  ok("served-gate: a server that won't start → ran:true + problem (offer blocked)", r2 && r2.ran === true && typeof r2.problem === "string" && r2.problem.length > 0);
+}
+
 console.log("== 69. animation-driver gate — a static 3D character is rejected (Block 48) ==");
 {
   const { animationDriverViolation } = await import("./src/structure.mjs");

@@ -477,6 +477,35 @@ export class Tools {
     } catch { try { fs.unlinkSync(cap); } catch { /* */ } return null; }
   }
 
+  // LIGHT served-app check (Block 60): does the project actually SERVE a working entry page? Start the
+  // server (or reuse a running one), fetch the entry, and confirm it renders SOMETHING (not a dead/blank
+  // page or a non-2xx). Fast + generic (not game-specific) — used to gate the REPL "run it now?" offer so a
+  // served app is never offered to start without a basic works-check (symmetric to the static-HTML check).
+  // Returns { ran, problem, url }. ran:false ⇒ not a startable server → caller just offers.
+  async _verifyServedApp() {
+    let url = null, startedPid = null;
+    const running = listServers();
+    if (running.length) url = running[0].url;
+    else {
+      const cmd = this._serverStartCommand();
+      if (!cmd) return { ran: false };
+      const s = await startServer({ command: cmd, cwd: this.workdir, readyTimeoutMs: 12000 });
+      if (!s.ok) return { ran: true, problem: `the server didn't start (${s.error || "never listened on $PORT"})` };
+      url = s.url; startedPid = s.pid;
+    }
+    try {
+      const res = await this.http_request({ url, timeoutMs: 8000 });
+      if (!res || !res.ok || (res.status && res.status >= 400)) return { ran: true, problem: `the entry route ${url} returned ${res && res.status ? "HTTP " + res.status : "no response"} — the server doesn't serve the page.`, url };
+      let sp = null;
+      try { sp = this.see_page({ url }); } catch { sp = null; }
+      if (sp && sp.broken) return { ran: true, problem: `the served page at ${url} is BROKEN: ${(sp.errors || []).slice(0, 3).join("; ")}`, url };
+      if (sp && sp.blank) return { ran: true, problem: `the served page at ${url} renders BLANK (no visible content) — likely a runtime JS error.`, url };
+      return { ran: true, problem: null, url };
+    } finally {
+      if (startedPid) stopServer(startedPid);
+    }
+  }
+
   async _verifyServedGame({ task, visionCheck } = {}) {
     let url = null, startedPid = null;
     const running = listServers();
