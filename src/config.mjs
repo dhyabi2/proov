@@ -36,7 +36,7 @@ export const DEFAULTS = {
   // Image-generation model for DESIGN-FIRST reference mockups (Block 65): proov can generate a reference
   // image of the intended design BEFORE coding, then build to MATCH it (the visual-match gate enforces ≥95%
   // per-asset). Must be an OpenRouter IMAGE-OUTPUT model. "" disables auto reference generation.
-  imageModel: "google/gemini-2.5-flash-image-preview",
+  imageModel: "google/gemini-2.5-flash-image",
   // Per-request timeout (ms) for the model call. SLOW or reasoning models (e.g. qwen3-coder-next) and big
   // create turns easily exceed a tight timeout — too short → the request is aborted mid-generation and
   // RETRIED (re-sending the whole context). 120s default gives slow models room; raise for very slow ones.
