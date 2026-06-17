@@ -174,6 +174,11 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
   // agent is creating files it stays on the creator; once it edits existing code it uses the editor.
   let editPhase = false;   // false → creator model; true → editor model
   const EDIT_TOOLS = new Set(["edit_file", "edit_files", "edit_symbol"]);
+  // Visual-verification tools (Block 59): used to detect the screenshot-thrash anti-pattern. see_page counts
+  // only with visual:true (text-mode see_page is a cheap, legit syntax/blank check). 4 visual checks with no
+  // task completed between them ⇒ the agent is steering by eye instead of building → one nudge to go work.
+  const VISUAL_TOOLS = new Set(["art_review", "compare_image", "compare_regions", "see_asset", "style_check"]);
+  const VISUAL_THRASH_CAP = 4;
   const messages = seedMessages && seedMessages.length
     ? seedMessages
     : [{ role: "system", content: systemPrompt }];
@@ -204,6 +209,10 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
   let gameGateDone = false;     // push back ONCE when done is called on a game that doesn't actually play
   let taskFidelityDone = false; // Block 58: push back ONCE when done is called but a prompt-named requirement is unreferenced
   let replanNudged = false;   // Block 5: nudge to re-plan once per failure streak (when a plan exists)
+  // SCREENSHOT-THRASH guard (Block 59): a weak model falls into edit→see_page→edit→see_page — micro-edits
+  // each followed by a visual check, burning turns while the real tasks never get built. Count visual checks
+  // since the last task COMPLETION; past a cap with work still open, nudge ONCE to go build, then watch.
+  let visualSinceProgress = 0, visualThrashNudged = false, lastCompletedCount = 0;
 
   let aborted = false;
   // CONTROL CHECKPOINT (Block 22): drain any control commands from the driving agent in the inter-turn
@@ -482,6 +491,26 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
     trace.push({ step, tool: call.tool, ok: result?.ok, tier: result?.tier });
     if (onStep) onStep({ step, tool: call.tool, args: call.args, result, elapsedMs, reasoning });
     if (bridge) bridge.emit("result", { tool: call.tool, ok: result?.ok !== false, note: clip(result?.note || result?.error || "", 300), ms: elapsedMs });
+
+    // SCREENSHOT-THRASH guard (Block 59): completing a task = real progress → reset the counter. A visual
+    // check (a screenshot / art_review / compare) with NO task completed since the last one accumulates; past
+    // the cap with work still OPEN, nudge ONCE to stop eyeballing and build the next task to completion.
+    {
+      const completedNow = (tools && Array.isArray(tools.tasks)) ? tools.tasks.filter((t) => t.status === "completed").length : 0;
+      if (completedNow > lastCompletedCount) { lastCompletedCount = completedNow; visualSinceProgress = 0; visualThrashNudged = false; }
+      const isVisualCheck = (call.tool === "see_page" && call.args && call.args.visual) || VISUAL_TOOLS.has(call.tool);
+      const openTasks = (tools && Array.isArray(tools.tasks)) ? tools.tasks.filter((t) => t.status !== "completed") : [];
+      if (isVisualCheck && result && result.ok !== false) {
+        if (++visualSinceProgress >= VISUAL_THRASH_CAP && openTasks.length && !visualThrashNudged) {
+          visualThrashNudged = true;
+          const seen = visualSinceProgress; visualSinceProgress = 0;
+          const next = openTasks[0];
+          messages.push({ role: "user", content: `You've run ${seen} visual checks in a row without completing a task — that's steering by eye, not building. STOP screenshotting after small edits. Build the next unfinished task to COMPLETION now${next ? `: "${next.subject}"` : ""} — write the REAL code (several substantial edits), mark it completed with task_write, and only THEN verify. Work, then watch.` });
+          trace.push({ step, visualThrash: seen });
+          continue;
+        }
+      }
+    }
 
     // MULTIMODAL: when a tool loaded an image/pdf, push a user message whose content is an ARRAY of
     // blocks so the model actually SEES the bytes (provider passes array content through unchanged).

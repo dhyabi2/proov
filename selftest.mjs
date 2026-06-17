@@ -2536,6 +2536,28 @@ console.log("== 68c. served-game URL routing — a URL never becomes FILE_NOT_FO
   ok("url-route: _servedCanvasDataURL + _verifyServedGame(visionCheck) wired (served vision parity)", typeof t._servedCanvasDataURL === "function" && typeof t._verifyServedGame === "function");
 }
 
+console.log("== 68d. screenshot-thrash guard — build, don't eyeball every edit (Block 59) ==");
+{
+  const mkTools = () => ({ tasks: [{ id: 1, status: "in_progress", subject: "Build level manager" }], see_page: () => ({ ok: true, note: "rendered" }) });
+  const run = async (script, tools) => {
+    let i = 0;
+    const provider = { chat: async () => ({ text: script[i++] ?? '{"tool":"done","args":{}}', usage: {}, raw: {} }), totals: () => ({ cost: 0 }) };
+    return runLoop({ provider, tools, toolMap: { see_page: (a) => tools.see_page(a) }, systemPrompt: "s", task: "x", maxSteps: 9 });
+  };
+  // Repeated VISUAL see_page with an open task → one nudge at the cap (4), naming the next task.
+  const visualScript = Array(6).fill('{"tool":"see_page","args":{"path":"index.html","visual":true}}');
+  const r = await run(visualScript, mkTools());
+  ok("thrash: 4 visual checks with an open task → ONE nudge to go build", r.trace.some((s) => s.visualThrash === 4) && r.messages.some((m) => typeof m.content === "string" && /Work, then watch/.test(m.content)));
+  ok("thrash: nudge fires exactly once (not every screenshot)", r.trace.filter((s) => s.visualThrash).length === 1);
+  ok("thrash: the nudge names the next open task", r.messages.some((m) => typeof m.content === "string" && /Build level manager/.test(m.content)));
+  // text-mode see_page (no visual) is a cheap legit syntax/blank check — must NOT count toward thrash.
+  const r2 = await run(Array(6).fill('{"tool":"see_page","args":{"path":"index.html"}}'), mkTools());
+  ok("thrash: text-mode see_page does NOT trigger the guard", !r2.trace.some((s) => s.visualThrash));
+  // no open tasks → nothing left to build → no nudge.
+  const r3 = await run(visualScript, { tasks: [{ id: 1, status: "completed", subject: "done" }], see_page: () => ({ ok: true }) });
+  ok("thrash: no open tasks → no nudge", !r3.trace.some((s) => s.visualThrash));
+}
+
 console.log("== 69. animation-driver gate — a static 3D character is rejected (Block 48) ==");
 {
   const { animationDriverViolation } = await import("./src/structure.mjs");

@@ -190,12 +190,21 @@ PROVE IT WORKS — RUN THE PROJECT'S OWN CHECKS: for ANY project that has its ow
   free checks (no writes/network); prefer EXTENDING a real test if the project has one. It's a proof tool, not
   a substitute for the project's own tests.
 
-VISUAL CHECK (web pages — use your EYE): after you build or change an HTML page, call see_page {path}
-  to READ how it ACTUALLY renders (the post-JS visible text). Look for render bugs — a literal "\n"
-  shown on screen instead of a line break, a BLANK page, wrong/missing/garbled text — then FIX them and
-  see_page again until it reads correctly. For layout/visual issues (overlap, broken styling) call
+BUILD FIRST, THEN VERIFY — do NOT screenshot after every edit: verification is for confirming a COMPLETE
+  chunk of work, not for steering one-line edits. The failure mode to avoid is edit→see_page→edit→see_page:
+  tiny edits each followed by a screenshot, burning turns while the real work (the level manager, enemies,
+  the HUD, levels) never gets built. Instead: IMPLEMENT a whole feature / finish a whole task — write the
+  real code, several substantial edits in a row — and only THEN call see_page once to check that finished
+  chunk. A see_page (visual) costs ~3s + vision tokens; it is a checkpoint between features, not a feedback
+  loop for single lines. If you've called see_page twice in a row with only a line or two changed between,
+  STOP looking and go build the next unfinished task on your checklist to completion. Work, then watch.
+
+VISUAL CHECK (web pages — use your EYE): when you've FINISHED building or substantially changing a page,
+  call see_page {path} to READ how it ACTUALLY renders (the post-JS visible text). Look for render bugs — a
+  literal "\n" shown on screen instead of a line break, a BLANK page, wrong/missing/garbled text — then FIX
+  them and see_page again until it reads correctly. For layout/visual issues (overlap, broken styling) call
   see_page {path, visual:true} to get a screenshot you can look at. Do NOT claim a page works without
-  looking at it with see_page.
+  looking at it with see_page — but look when the work is DONE, not after each keystroke.
   CRITICAL: see_page now also runs a JS SYNTAX check (node --check on every inline script and local .js)
   AND captures runtime CONSOLE errors. A JavaScript error (e.g. "Unexpected token 'else' / '}'") leaves
   the page structurally present but BLANK — it LOOKS fine in the DOM yet nothing runs. If see_page returns
