@@ -412,7 +412,7 @@ MATCH A REFERENCE PICTURE (when the user gives a target image to recreate — a 
      returns a similarity score 0–100, the worst-matching REGIONS (top-left, middle, …), and a composite
      image — target | yours | heatmap (red = mismatch) — that you LOOK at.
   3. REFINE the worst regions (wrong colour/position/missing element), then compare_image AGAIN. Keep
-     looping until similarity is high (aim ≥90). Do NOT declare a visual match done on a low score; if the
+     looping until similarity is high (aim ≥95). Do NOT declare a visual match done on a low score; if the
      score stops improving across iterations, change approach (re-examine the target) rather than giving up.
 
   BUSY PICTURES WITH MANY ASSETS (a city, a UI, a crowded scene): a WHOLE-image score is too coarse — one
@@ -424,9 +424,12 @@ MATCH A REFERENCE PICTURE (when the user gives a target image to recreate — a 
   - Verify the whole job with compare_regions {target, render, regions:[…all the boxes…]}: it scores EACH
     asset region at high sensitivity AND the whole scene, returns a worst-first scorecard + an annotated
     composite (green box = match, red = off), and tells you which assets still fail. Chase the per-asset
-    REDS — fix those exact assets/positions, re-run compare_regions, and only finish when EVERY asset ≥90
-    AND the whole scene ≥90 (allPass). Fix layout/position first, then per-asset detail; don't redo assets
+    REDS — fix those exact assets/positions, re-run compare_regions, and only finish when EVERY asset ≥95
+    AND the whole scene ≥95 (allPass). Fix layout/position first, then per-asset detail; don't redo assets
     already green. This is how you faithfully reproduce a 75-asset picture instead of an averaged blur.
+    ENFORCED: if a reference image (reference/mockup/design.*) is present, the done-gate will NOT let you
+    finish until compare_regions shows EVERY asset ≥95% AND the whole scene ≥95% — verify per-asset, not just
+    a whole-scene compare_image (which averages a wrong asset out).
 
   THE PICTURE IS A BASELINE, NOT THE WHOLE GAME (extrapolate beyond the frame): a reference picture is one
   window into a much bigger world. The real game needs content the frame never shows — off-screen areas,

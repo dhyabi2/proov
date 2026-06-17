@@ -34,6 +34,13 @@ import { ARTKIT, ARTKIT3D, NOISE_FBM_SRC } from "./artkit.mjs";
 import { orbitScene } from "./scene3d.mjs";
 import * as world from "./world.mjs";
 
+// VISUAL-MATCH bar (Block 64): when the build must MATCH a reference image, every asset AND the whole scene
+// must reach this similarity % before done is accepted. Raised from 90 → 95 (the user's bar). A whole-scene
+// score averages out a single wrong asset, so the gate insists on a PER-ASSET pass (compare_regions).
+const VISUAL_MATCH_BAR = 95;
+// Filenames that look like a user-provided REFERENCE/mockup the build is meant to reproduce.
+const REFERENCE_RE = /^(reference|target|mockup|design|ref|goal|expected|comp)\b.*\.(png|jpe?g|webp|gif)$/i;
+
 // A served game is driven by URL, not a file path. The agent commonly passes the served URL in the `url`
 // slot OR (mistakenly) in `path` — accept BOTH so a URL never falls through to file resolution (which
 // returned FILE_NOT_FOUND and trapped the agent in an edit-the-server loop, Block 58). Returns the URL or "".
@@ -216,6 +223,22 @@ export class Tools {
       const r = taskFidelityMisses(task, code);
       if (!r.checked.length) return null;              // prompt named nothing verifiable → nothing to gate
       return r;
+    } catch { return null; }
+  }
+
+  // Detect a user-provided REFERENCE image the build is meant to reproduce (Block 64): scans the workdir
+  // top level + common asset folders for reference.png / mockup.* / design.* etc. Returns the relative path
+  // or null (most builds — from-scratch games, apps — have none, so the visual-match gate stays dormant).
+  _referenceImage() {
+    try {
+      for (const sub of ["", "assets", "reference", "public", "img", "images"]) {
+        const d = sub ? path.join(this.workdir, sub) : this.workdir;
+        let ents; try { ents = fs.readdirSync(d); } catch { continue; }
+        for (const name of ents) {
+          if (REFERENCE_RE.test(name)) return (sub ? sub + "/" : "") + name;
+        }
+      }
+      return null;
     } catch { return null; }
   }
 
@@ -1144,8 +1167,11 @@ export class Tools {
       const r = compareImages(targetAbs, candAbs, { grid });
       if (!r.ok) return { ok: false, error: r.error, hint: "couldn't diff — is Chrome installed and are both files real images?" };
       const worst = r.worst.map((w) => `${w.region} (${w.sim}% match)`).join(", ");
-      const verdict = r.similarity >= 90 ? "close match" : r.similarity >= 75 ? "getting there — keep refining" : "far off — fix the worst regions and re-compare";
-      const out = { ok: true, similarity: r.similarity, mae: r.mae, worstRegions: r.worst, note: `${r.similarity}% similar to the target — ${verdict}. Worst regions: ${worst || "n/a"}. Look at the heatmap (red = mismatch), fix those areas, and compare again.` };
+      const verdict = r.similarity >= VISUAL_MATCH_BAR ? "close match" : r.similarity >= 75 ? "getting there — keep refining" : "far off — fix the worst regions and re-compare";
+      // Record for the done-gate (Block 64). Whole-scene only (perAsset:false) — a whole-scene score can hide
+      // a wrong asset, so the gate still asks for a PER-ASSET compare_regions pass when a reference is present.
+      this.lastVisualMatch = { ran: true, perAsset: false, allPass: r.similarity >= VISUAL_MATCH_BAR, whole: r.similarity, assetsOff: [], worst, target };
+      const out = { ok: true, similarity: r.similarity, mae: r.mae, worstRegions: r.worst, note: `${r.similarity}% similar to the target — ${verdict} (bar ≥${VISUAL_MATCH_BAR}%). Worst regions: ${worst || "n/a"}. Look at the heatmap (red = mismatch), fix those areas, and compare again. For a real verdict, compare_regions PER-ASSET (a high whole-scene score can hide a wrong asset).` };
       if (r.dataUrl) out.multimodal = { kind: "image", path: "diff", mime: "image/png", dataUrl: r.dataUrl };
       return out;
     } finally { if (tmpShot) { try { fs.unlinkSync(tmpShot); } catch { /* */ } } }
@@ -1194,11 +1220,14 @@ export class Tools {
     try {
       const r = compareRegions(targetAbs, candAbs, regions);
       if (!r.ok) return { ok: false, error: r.error, hint: "couldn't diff regions — is Chrome installed and both files real images?" };
-      const off = r.regions.filter((x) => x.similarity < 90);
+      const off = r.regions.filter((x) => x.similarity < VISUAL_MATCH_BAR);
       const worst = r.regions.slice(0, 6).map((x) => `${x.label}: ${x.similarity}%`).join(", ");
-      const pass = off.length === 0 && r.whole >= 90;
+      const pass = off.length === 0 && r.whole >= VISUAL_MATCH_BAR;
+      // Record for the done-gate (Block 64): the last PER-ASSET match against a reference. The gate won't
+      // accept done while a reference is present and the render isn't matched per-asset at the bar.
+      this.lastVisualMatch = { ran: true, perAsset: true, allPass: pass, whole: r.whole, assetsOff: off.map((x) => x.label), worst, target };
       const out = { ok: true, whole: r.whole, regions: r.regions, assetsOff: off.map((x) => x.label), allPass: pass,
-        note: `whole scene ${r.whole}% · ${r.regions.length - off.length}/${r.regions.length} assets ≥90%. ${pass ? "All assets and the whole scene pass." : `Fix these assets next (worst first): ${worst}. A high whole-scene score can still hide a wrong asset — chase the per-asset reds.`}` };
+        note: `whole scene ${r.whole}% · ${r.regions.length - off.length}/${r.regions.length} assets ≥${VISUAL_MATCH_BAR}%. ${pass ? "All assets and the whole scene pass." : `Fix these assets next (worst first): ${worst}. A high whole-scene score can still hide a wrong asset — chase the per-asset reds.`}` };
       if (r.dataUrl) out.multimodal = { kind: "image", path: "scorecard", mime: "image/png", dataUrl: r.dataUrl };
       return out;
     } finally { if (tmpShot) { try { fs.unlinkSync(tmpShot); } catch { /* */ } } }

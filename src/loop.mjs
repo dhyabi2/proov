@@ -208,6 +208,7 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
   let doneTaskNudged = false;   // push back ONCE when done is called with incomplete checklist tasks
   let gameGateDone = false;     // push back ONCE when done is called on a game that doesn't actually play
   let taskFidelityDone = false; // Block 58: push back ONCE when done is called but a prompt-named requirement is unreferenced
+  let visualMatchTries = 0;     // Block 64: block done until the render matches a reference image per-asset ≥95% (capped)
   let replanNudged = false;   // Block 5: nudge to re-plan once per failure streak (when a plan exists)
   // SCREENSHOT-THRASH guard (Block 59): a weak model falls into edit→see_page→edit→see_page — micro-edits
   // each followed by a visual check, burning turns while the real tasks never get built. Count visual checks
@@ -302,6 +303,30 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
           messages.push({ role: "user", content: `You called done, but the prompt explicitly asked you to USE something your code never references:\n${punch}\n(checked ${tf.files} code file${tf.files === 1 ? "" : "s"}, excluding docs + .proov metadata.)\nThis usually means you built a generic solution and skipped the actual requirement. Go ACTUALLY use it — import or vendor it, call its API, wire it into the program — then verify and call done. If you addressed it under a different name, make that reference explicit in the code (an import or a comment naming it) so it's verifiable.` });
           trace.push({ step, taskFidelity: { misses: tf.misses.map((m) => m.entity), files: tf.files } });
           continue;
+        }
+      }
+      // VISUAL-MATCH GATE (Block 64): when the build is meant to reproduce a REFERENCE image (a mockup/design),
+      // don't accept done until the render MATCHES it PER-ASSET at the bar (≥95%) — a whole-scene score averages
+      // out a single wrong asset, so per-asset is required. Only fires when a reference image is present (a
+      // from-scratch build has none → never blocks). Bounded (≤3 push-backs) so a model that can't reach the bar
+      // can't deadlock. Two cases: a per-asset compare ran but FAILED → name the assets; no per-asset compare
+      // was run yet → require compare_regions.
+      if (visualMatchTries < 3 && tools && typeof tools._referenceImage === "function" && tools.workdir) {
+        const refImg = tools._referenceImage();
+        if (refImg) {
+          const lm = tools.lastVisualMatch;
+          let problem = null;
+          if (lm && lm.ran && lm.perAsset && !lm.allPass) {
+            problem = `the render does NOT match the reference (${refImg}) yet — assets below 95%: ${(lm.assetsOff || []).slice(0, 8).join(", ") || lm.worst || "see the scorecard"}. Fix those exact assets/positions, re-run compare_regions, and only finish when EVERY asset ≥95% AND the whole scene ≥95% (allPass).`;
+          } else if (!lm || !lm.perAsset || lm.target !== refImg) {
+            problem = `there's a reference image (${refImg}) this build must match, but you haven't verified the render against it PER-ASSET. Run compare_regions {target:"${refImg}", render:"<your page>", regions:[…one box per asset…]} and fix until EVERY asset ≥95% AND the whole scene ≥95% (allPass), THEN call done. A whole-scene compare_image score averages out a wrong asset — verify per-asset.`;
+          }
+          if (problem) {
+            visualMatchTries++; noProgress = 0;
+            messages.push({ role: "user", content: `You called done, but the visual match to the reference isn't met: ${problem}` });
+            trace.push({ step, visualMatchGate: clip(problem, 80) });
+            continue;
+          }
         }
       }
       // PLAYABILITY GATE (games): if a web game was built, don't accept done until it actually PLAYS — the

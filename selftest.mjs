@@ -2632,6 +2632,34 @@ console.log("== 68h. next-step suggester — propose a real, grounded next gap (
   ok("nextstep: no gameFile → null (stays quiet)", suggestNextStep(dir, "x", { fsMod: fs, pathMod: path, gameFile: null }) === null);
 }
 
+console.log("== 68i. visual-match gate — reproduce a reference per-asset ≥95% (Block 64) ==");
+{
+  const { Tools } = await import("./src/tools.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proov-ref-"));
+  const t = new Tools(dir);
+  ok("vmatch: no reference image → _referenceImage null (gate dormant)", t._referenceImage() === null);
+  fs.writeFileSync(path.join(dir, "mockup.png"), "x");
+  ok("vmatch: detects a reference (mockup.png)", t._referenceImage() === "mockup.png");
+
+  const run = async (tools, n = 4) => {
+    let i = 0; const script = Array(n).fill('{"tool":"done","args":{"summary":"d"}}');
+    const provider = { chat: async () => ({ text: script[i++] ?? '{"tool":"done","args":{}}', usage: {}, raw: {} }), totals: () => ({ cost: 0 }) };
+    return runLoop({ provider, tools, toolMap: {}, systemPrompt: "s", task: "reproduce the mockup", maxSteps: 8 });
+  };
+  // reference present but never verified per-asset → gate blocks, bounded to 3, then lets through (no deadlock).
+  const r1 = await run({ workdir: dir, tasks: [], _referenceImage: () => "reference.png", lastVisualMatch: null });
+  ok("vmatch: a reference with no per-asset compare → gate blocks (bounded 3, no deadlock)", r1.trace.filter((s) => s.visualMatchGate).length === 3 && r1.done);
+  // a per-asset compare that FAILED the ≥95 bar → blocked.
+  const r2 = await run({ workdir: dir, tasks: [], _referenceImage: () => "reference.png", lastVisualMatch: { ran: true, perAsset: true, allPass: false, assetsOff: ["tower"], target: "reference.png" } });
+  ok("vmatch: a sub-95 per-asset match → blocked", r2.trace.some((s) => s.visualMatchGate));
+  // every asset ≥95 (allPass) against THAT reference → done accepted, no gate.
+  const r3 = await run({ workdir: dir, tasks: [], _referenceImage: () => "reference.png", lastVisualMatch: { ran: true, perAsset: true, allPass: true, target: "reference.png" } });
+  ok("vmatch: every asset ≥95% (allPass) → done accepted", r3.done && !r3.trace.some((s) => s.visualMatchGate));
+  // no reference → gate dormant (from-scratch builds are never blocked).
+  const r4 = await run({ workdir: dir, tasks: [], _referenceImage: () => null, lastVisualMatch: null });
+  ok("vmatch: no reference → gate dormant", r4.done && !r4.trace.some((s) => s.visualMatchGate));
+}
+
 console.log("== 69. animation-driver gate — a static 3D character is rejected (Block 48) ==");
 {
   const { animationDriverViolation } = await import("./src/structure.mjs");
