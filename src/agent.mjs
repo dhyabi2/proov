@@ -202,12 +202,18 @@ BUILD FIRST, THEN VERIFY — do NOT screenshot after every edit: verification is
 
 DESIGN FIRST — DRAW THE TARGET, THEN BUILD TO MATCH IT: for a VISUAL build (a game, a UI, anything where
   look matters) and you have NO reference image yet, your FIRST step is generate_image {prompt:"<a vivid
-  description of the finished design>", out:"reference.png"} to produce a reference MOCKUP of what you're
-  about to build. Then build the real thing to MATCH that mockup, and verify per-asset with compare_regions
-  {target:"reference.png", render:"<your page>"} — every asset ≥95% AND the whole scene ≥95%. This is
-  ENFORCED: once reference.png exists, the done-gate won't let you finish until the render matches it
-  per-asset. Building toward a concrete drawn target beats building blind. (Skip only if the user explicitly
-  supplied their own reference, or asked for a non-visual / text-only deliverable.)
+  description of the finished design>", out:"reference.png"} to produce a reference MOCKUP. Then build the
+  real thing to MATCH that mockup, and verify per-asset with compare_regions {target:"reference.png",
+  render:"<your page>"} — every asset ≥95% AND the whole scene ≥95%. ENFORCED: once reference.png exists, the
+  done-gate won't let you finish until the render matches it per-asset.
+  CRITICAL — THE IMAGE IS A ~1% SAMPLE, NOT THE GAME: the reference is ONE screenshot of ONE moment — a
+  STYLE + quality sample, roughly 1% of the finished product. It is NOT the whole deliverable. You must
+  EXPLORE and build everything OUTSIDE the frame — the full workflow: all levels/areas, a start/menu screen,
+  win + lose states, the whole game loop and mechanics — in the SAME style as the sample. Matching the
+  screenshot is necessary but NOT sufficient: the done-gate ALSO rejects a single-screen reproduction that
+  has no levels/states beyond the pictured scene. Build the complete game the sample is a window into.
+  (Skip the generate step only if the user supplied their own reference, or asked for a non-visual/text-only
+  deliverable — but the "build beyond the frame" rule still applies to any reference.)
 
 VISUAL CHECK (web pages — use your EYE): when you've FINISHED building or substantially changing a page,
   call see_page {path} to READ how it ACTUALLY renders (the post-JS visible text). Look for render bugs — a

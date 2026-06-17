@@ -245,7 +245,7 @@ export class Tools {
       fs.mkdirSync(path.dirname(absOut), { recursive: true });
       fs.writeFileSync(absOut, Buffer.from(m[2], "base64"));
     } catch (e) { return { ok: false, error: `couldn't save the image: ${e.message}` }; }
-    return { ok: true, path: out, model: r.model, note: `generated a reference image (${r.model}) → ${out}. Build to MATCH it, then verify per-asset with compare_regions {target:"${out}", render:"<page>"} (every asset ≥95%).`,
+    return { ok: true, path: out, model: r.model, note: `generated a reference image (${r.model}) → ${out}. This is a ~1% SAMPLE of ONE scene — a style baseline, NOT the whole deliverable. Build the FULL game beyond the frame (all levels/states/the whole loop) in this style, AND match the pictured parts per-asset with compare_regions {target:"${out}", render:"<page>"} (every asset ≥95%).`,
       multimodal: { kind: "image", path: out, mime: "image/png", dataUrl: r.dataUrl } };
   }
 

@@ -13,7 +13,7 @@ import { buildMultimodalContent } from "./multimodal.mjs";
 import { applyControl, controlToMessage } from "./bridge.mjs";
 import { compressContext } from "./compress.mjs";
 import { isWebGLPage } from "./webcheck.mjs";
-import { analyzeStructure, wantsMinimal, assetSourceViolation, animationDriverViolation, bundleGameSource } from "./structure.mjs";
+import { analyzeStructure, wantsMinimal, assetSourceViolation, animationDriverViolation, bundleGameSource, beyondFrameViolation } from "./structure.mjs";
 
 // Detect a built WEB GAME in the workdir (a canvas + an animation loop / control contract), so the
 // done-gate can verify it actually PLAYS before accepting done. Returns the html path or null.
@@ -320,6 +320,15 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
             problem = `the render does NOT match the reference (${refImg}) yet — assets below 95%: ${(lm.assetsOff || []).slice(0, 8).join(", ") || lm.worst || "see the scorecard"}. Fix those exact assets/positions, re-run compare_regions, and only finish when EVERY asset ≥95% AND the whole scene ≥95% (allPass).`;
           } else if (!lm || !lm.perAsset || lm.target !== refImg) {
             problem = `there's a reference image (${refImg}) this build must match, but you haven't verified the render against it PER-ASSET. Run compare_regions {target:"${refImg}", render:"<your page>", regions:[…one box per asset…]} and fix until EVERY asset ≥95% AND the whole scene ≥95% (allPass), THEN call done. A whole-scene compare_image score averages out a wrong asset — verify per-asset.`;
+          } else {
+            // BEYOND THE FRAME (Block 66): the per-asset match passed — but the reference is a ~1% SAMPLE of
+            // ONE scene. Don't accept a single-screen reproduction; require the full game beyond the frame.
+            try {
+              const gf = detectGameFile(tools.workdir);
+              let entry = ""; try { entry = gf ? fs.readFileSync(path.join(tools.workdir, gf), "utf8") : ""; } catch { /* */ }
+              const bf = beyondFrameViolation(bundleGameSource(entry, tools.workdir, fs, path), task);
+              if (bf) { problem = bf; trace.push({ step, beyondFrame: 1 }); }
+            } catch { /* couldn't read → don't block */ }
           }
           if (problem) {
             visualMatchTries++; noProgress = 0;

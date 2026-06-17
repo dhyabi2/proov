@@ -2683,6 +2683,32 @@ console.log("== 68j. design-first image generation — draw the target, then bui
   ok("imageModel default is set to an image model", typeof CFG.imageModel === "string" && /image/i.test(CFG.imageModel));
 }
 
+console.log("== 68k. beyond-the-frame — the reference is a 1% sample, build the whole game (Block 66) ==");
+{
+  const { beyondFrameViolation } = await import("./src/structure.mjs");
+  const oneScreen = '<canvas></canvas><script>function loop(){requestAnimationFrame(loop)}loop()</script>';
+  ok("beyond-frame: a single-screen game → flagged as a 1% sample", /1% SAMPLE/.test(beyondFrameViolation(oneScreen, "make a platformer") || ""));
+  ok("beyond-frame: multiple levels → ok", beyondFrameViolation(oneScreen + '<script>const levels=[{a:1},{b:2}];</script>', "platformer") === null);
+  ok("beyond-frame: game states (win/lose) → ok", beyondFrameViolation(oneScreen + '<script>state="gameover";</script>', "platformer") === null);
+  ok("beyond-frame: progression (nextLevel) → ok", beyondFrameViolation(oneScreen + '<script>function nextLevel(){}</script>', "platformer") === null);
+  ok("beyond-frame: a non-game page → not flagged", beyondFrameViolation('<div>hello</div>', "a landing page") === null);
+
+  // GATE: per-asset match passed, but the build is one screen → done blocked until the full game exists.
+  const run = async (tools, n = 4) => {
+    let i = 0; const script = Array(n).fill('{"tool":"done","args":{"summary":"d"}}');
+    const provider = { chat: async () => ({ text: script[i++] ?? '{"tool":"done","args":{}}', usage: {}, raw: {} }), totals: () => ({ cost: 0 }) };
+    return runLoop({ provider, tools, toolMap: {}, systemPrompt: "s", task: "reproduce + build the platformer", maxSteps: 8 });
+  };
+  const d1 = fs.mkdtempSync(path.join(os.tmpdir(), "proov-bf-"));
+  fs.writeFileSync(path.join(d1, "index.html"), oneScreen);
+  const lm = { ran: true, perAsset: true, allPass: true, target: "reference.png" };
+  const rA = await run({ workdir: d1, tasks: [], _referenceImage: () => "reference.png", lastVisualMatch: lm });
+  ok("beyond-frame gate: match passed but single-screen build → blocked", rA.trace.some((s) => s.beyondFrame));
+  fs.writeFileSync(path.join(d1, "engine.js"), "const levels=[{a:1},{b:2}]; function nextLevel(){}");
+  const rB = await run({ workdir: d1, tasks: [], _referenceImage: () => "reference.png", lastVisualMatch: lm });
+  ok("beyond-frame gate: full game (levels/progression) → accepted", rB.done && !rB.trace.some((s) => s.beyondFrame));
+}
+
 console.log("== 69. animation-driver gate — a static 3D character is rejected (Block 48) ==");
 {
   const { animationDriverViolation } = await import("./src/structure.mjs");

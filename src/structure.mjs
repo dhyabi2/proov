@@ -210,6 +210,23 @@ export function analyzeStructure(html, task = "") {
   return { genre, score, requiredScore, optionalScore, pass, zeroCategories, missing, antiHits, nodes: results.map((r) => ({ id: r.node.id, present: r.present, count: r.count, anti: r.anti })) };
 }
 
+// BEYOND-THE-FRAME enforcement (Block 66): a reference image is a ~1% SAMPLE — one screenshot of one moment,
+// NOT the whole game. A build that only reproduces the pictured scene (a single screen, no progression, no
+// game states) is incomplete: the agent must explore + build the full workflow beyond the frame. For a GAME,
+// flag a single-screen reproduction that lacks BOTH level progression AND game states (menu/win/lose). Scans
+// the bundled source; deterministic. Returns a message or null (has scope beyond one screen → fine).
+export function beyondFrameViolation(html, task = "") {
+  const s = String(html || "");
+  const isGame = /<canvas/i.test(s) && /(requestAnimationFrame|proovSim|slivrSim|getContext\s*\()/i.test(s);
+  if (!isGame) return null;
+  const hasProgression = /\blevels?\s*[=:]\s*\[[^\]]*[},][^\]]*\{/.test(s)
+    || /(nextlevel|loadlevel|advancelevel|currentlevel|level\s*\+\+|level\s*=\s*level\s*\+|stage\s*\+\+|\bwave\s*\+\+|nextwave|new\s+level)/i.test(s);
+  const hasStates = /(game\s*over|gameover|you\s*win|victory|defeat|you\s*lose|game\s*won|title\s*screen|main\s*menu|start\s*screen|pause\s*screen)/i.test(s)
+    || /(screen|state|scene|mode|phase)\s*[=:]\s*['"](menu|title|start|win|won|lose|lost|gameover|game_over|victory|defeat|play|playing|paused)['"]/i.test(s);
+  if (hasProgression || hasStates) return null;
+  return `this looks like only the PICTURED scene — a single screen. The reference image is a ~1% SAMPLE (one screenshot of one moment), NOT the whole game. Build the FULL game beyond the frame: multiple levels/areas, a start/menu screen, and win + lose states — the complete loop — in the SAME style as the sample. Explore what a complete version of this needs and build it, then finish.`;
+}
+
 // Ranked "what's not built YET" for the genre — required-missing first, then absent OPTIONAL layers, each by
 // weight. Feeds the Next-Step Suggester (Block 63): every item is a REAL gap the structure model found by
 // inspecting the build, so a suggestion can never hallucinate. Returns [{id,label,cat,required,weight}].
