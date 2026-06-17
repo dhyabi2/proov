@@ -757,6 +757,7 @@ export async function runAgent(task, workdir, opts = {}) {
     provider, tools, toolMap, systemPrompt: SYSTEM + styleSuffix(workdir), task,
     maxSteps: opts.maxSteps ?? Infinity, onStep: opts.onStep,
     verify: opts.verify, maxRepairs: opts.maxRepairs,
+    designFirst: opts.designFirst,
   });
 }
 
@@ -950,6 +951,7 @@ export class Session {
       verify,
       maxRepairs,
       bridge,
+      designFirst: this.opts.designFirst,
     });
     this.messages = res.messages; // persist the thread for the next turn
     return res;

@@ -37,6 +37,10 @@ export const DEFAULTS = {
   // image of the intended design BEFORE coding, then build to MATCH it (the visual-match gate enforces ≥95%
   // per-asset). Must be an OpenRouter IMAGE-OUTPUT model. "" disables auto reference generation.
   imageModel: "google/gemini-2.5-flash-image",
+  // DESIGN-FIRST (Block 67): for a fresh VISUAL build, proov DRAWS a reference image (imageModel) BEFORE the
+  // agent codes, deterministically — so the visual-match + beyond-frame gates have a target to enforce
+  // (instead of relying on the model to remember to generate one). true = on. Needs imageModel + a key.
+  designFirst: true,
   // Per-request timeout (ms) for the model call. SLOW or reasoning models (e.g. qwen3-coder-next) and big
   // create turns easily exceed a tight timeout — too short → the request is aborted mid-generation and
   // RETRIED (re-sending the whole context). 120s default gives slow models room; raise for very slow ones.

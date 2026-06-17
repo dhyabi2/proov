@@ -35,6 +35,40 @@ export function detectGameFile(workdir) {
   return null;
 }
 
+// Does this task describe a VISUAL build (something whose LOOK matters — a game/UI/site)? Conservative +
+// keyword-based: a clear non-visual deliverable (cli/api/script/library/backend) opts out so we never draw a
+// reference for a text-only job. Drives the design-first preflight (Block 67).
+export function isVisualBuild(task) {
+  const t = String(task || "").toLowerCase();
+  if (!t.trim()) return false;
+  if (/\b(cli|api|backend|server-only|script|library|package|parser|algorithm|refactor|unit test|regex|sql|cron|webhook|bug ?fix)\b/.test(t)) return false;
+  return /\b(game|puzzle|platformer|shooter|rpg|arcade|sokoban|roguelike|metroidvania|maze|tetris|snake|ui|interface|website|web ?app|web ?page|landing ?page|dashboard|portfolio|mockup|design|clone|recreate|render|canvas|webgl|three\.?js|3d|2d|sprite|animation|scene|level)\b/.test(t);
+}
+// True when the workdir already has a built page/game (a follow-up to existing code) — don't inject a fresh
+// reference mid-project; the design should have been drawn at the start.
+function hasExistingBuild(workdir) {
+  if (detectGameFile(workdir)) return true;
+  for (const name of ["index.html", "game.html", "index.htm"]) {
+    try { if (fs.statSync(path.join(workdir, name)).size > 400) return true; } catch { /* */ }
+  }
+  return false;
+}
+
+// Run BEFORE the first build turn: for a fresh VISUAL build with no reference yet, DRAW the target first
+// (deterministic — don't rely on the model to remember). Saves reference.png so the visual-match + beyond-
+// frame gates have something to enforce. Returns the saved path, or null (no-op). Block 67.
+async function designFirstPreflight({ tools, task, provider }) {
+  if (!tools || typeof tools.generate_image !== "function" || typeof tools._referenceImage !== "function" || !tools.workdir) return null;
+  if (!provider || !provider.imageModel) return null;
+  if (typeof provider.hasKey === "function" && !provider.hasKey()) return null;
+  if (tools._referenceImage()) return null;            // already have a reference
+  if (!isVisualBuild(task)) return null;               // only visual/game builds
+  if (hasExistingBuild(tools.workdir)) return null;    // a follow-up to existing code → don't inject one now
+  const prompt = `A polished, complete reference screenshot/mockup of the intended visual design — style, characters, colours, UI and layout — for this build: ${String(task).slice(0, 600)}. One representative scene, production quality.`;
+  const r = await tools.generate_image({ prompt, out: "reference.png" });
+  return r && r.ok ? (r.path || "reference.png") : null;
+}
+
 // SEMANTIC VISION CHECKLIST (Block 37): the deterministic gates check STRUCTURE (renders, responds, not
 // flat boxes) but not whether the render actually LOOKS like what the user asked for. A single fuzzy
 // "fidelity score" is unreliable; instead we ask a strong VISION model to derive a CHECKLIST of the
@@ -168,7 +202,7 @@ export function reasoningProse(text) {
   return s.slice(0, i).replace(/```\w*/g, "").replace(/\s+/g, " ").trim();
 }
 
-export async function runLoop({ provider, tools, toolMap, systemPrompt, task, maxSteps = Infinity, onStep, onToolStart, onThinking, beforeTool, seedMessages, signal, verify, maxRepairs = 3, bridge, editModel, compress, verifyModel }) {
+export async function runLoop({ provider, tools, toolMap, systemPrompt, task, maxSteps = Infinity, onStep, onToolStart, onThinking, beforeTool, seedMessages, signal, verify, maxRepairs = 3, bridge, editModel, compress, verifyModel, designFirst = true }) {
   // DUAL-MODEL ROUTING (optional): a CREATOR model (provider.model) builds/creates; an EDITOR model
   // (editModel) handles editing/bug-fixing. We pick per turn from the most recent mutation: while the
   // agent is creating files it stays on the creator; once it edits existing code it uses the editor.
@@ -238,6 +272,17 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
       for (const raw of bridge.poll()) { handle(raw); if (aborted) return; }
     }
   };
+  // DESIGN-FIRST PREFLIGHT (Block 67): the design-first rule was prompt-only, so a weak model just skipped
+  // generate_image and the visual-match/beyond-frame gates stayed dormant (no reference → nothing to enforce).
+  // Make it deterministic: for a FRESH visual build with no reference yet, proov DRAWS the reference itself
+  // BEFORE the agent codes — so the gates have a target to enforce. No-op for non-visual tasks, follow-ups to
+  // existing code, or when image gen isn't available. Runs once (guarded by _referenceImage()).
+  if (designFirst) {
+    try {
+      const made = await designFirstPreflight({ tools, task, provider });
+      if (made) { trace.push({ step: 0, designFirst: made }); if (onStep) onStep({ step: 0, tool: "generate_image", args: { out: made }, result: { ok: true, note: `drew a reference (${made}) before coding — building to match it` } }); }
+    } catch { /* preflight must never break the run */ }
+  }
   for (let step = 0; step < maxSteps; step++) {
     if (signal?.aborted) { aborted = true; trace.push({ step, aborted: true }); break; }
     if (bridge) { await applyBridgeControl(); if (aborted) { trace.push({ step, aborted: true }); break; } }

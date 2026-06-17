@@ -2709,6 +2709,45 @@ console.log("== 68k. beyond-the-frame — the reference is a 1% sample, build th
   ok("beyond-frame gate: full game (levels/progression) → accepted", rB.done && !rB.trace.some((s) => s.beyondFrame));
 }
 
+console.log("== 68l. design-first preflight — DRAW the reference before coding (enforced) (Block 67) ==");
+{
+  const { isVisualBuild } = await import("./src/loop.mjs");
+  ok("preflight: a game task is a visual build", isVisualBuild("make a tetris game with levels") === true);
+  ok("preflight: a UI/site task is visual", isVisualBuild("build a portfolio landing page") === true);
+  ok("preflight: a backend/CLI task is NOT visual", isVisualBuild("build a REST api in node") === false && isVisualBuild("refactor the parser library") === false);
+
+  const provider = { imageModel: "stub-img", hasKey: () => true, chat: async () => ({ text: '{"tool":"done","args":{}}', usage: {}, raw: {} }), totals: () => ({ cost: 0 }) };
+  const mk = (dir) => { let gen = 0; return { gen: () => gen, tools: { workdir: dir, tasks: [], generate_image: async ({ out } = {}) => { gen++; fs.writeFileSync(path.join(dir, out || "reference.png"), "x"); return { ok: true, path: out || "reference.png", model: "stub" }; }, _referenceImage: () => { try { fs.statSync(path.join(dir, "reference.png")); return "reference.png"; } catch { return null; } } } }; };
+
+  // a FRESH visual build with no reference → proov draws it BEFORE the first turn (deterministic, not the model).
+  const d1 = fs.mkdtempSync(path.join(os.tmpdir(), "proov-df-"));
+  const h1 = mk(d1);
+  const r1 = await runLoop({ provider, tools: h1.tools, toolMap: {}, systemPrompt: "s", task: "make a 2D platformer game with a HUD and levels", maxSteps: 1 });
+  ok("preflight: drew the reference BEFORE coding (generate_image called once)", h1.gen() === 1 && r1.trace.some((s) => s.designFirst === "reference.png") && fs.existsSync(path.join(d1, "reference.png")));
+
+  // a NON-visual task → no reference drawn.
+  const d2 = fs.mkdtempSync(path.join(os.tmpdir(), "proov-df-"));
+  const h2 = mk(d2);
+  await runLoop({ provider, tools: h2.tools, toolMap: {}, systemPrompt: "s", task: "build a REST api in node", maxSteps: 1 });
+  ok("preflight: a non-visual task → no reference drawn", h2.gen() === 0);
+
+  // a FOLLOW-UP to existing code → don't inject a reference mid-project.
+  const d3 = fs.mkdtempSync(path.join(os.tmpdir(), "proov-df-"));
+  fs.writeFileSync(path.join(d3, "index.html"), "<html>" + "x".repeat(500) + "</html>");
+  const h3 = mk(d3);
+  await runLoop({ provider, tools: h3.tools, toolMap: {}, systemPrompt: "s", task: "add a HUD to the game", maxSteps: 1 });
+  ok("preflight: a follow-up to existing code → no reference drawn", h3.gen() === 0);
+
+  // designFirst:false disables it.
+  const d4 = fs.mkdtempSync(path.join(os.tmpdir(), "proov-df-"));
+  const h4 = mk(d4);
+  await runLoop({ provider, tools: h4.tools, toolMap: {}, systemPrompt: "s", task: "make a game", maxSteps: 1, designFirst: false });
+  ok("preflight: designFirst:false disables it", h4.gen() === 0);
+  // ON by default in config.
+  const { DEFAULTS: CFG2 } = await import("./src/config.mjs");
+  ok("preflight: designFirst ON by default", CFG2.designFirst === true);
+}
+
 console.log("== 69. animation-driver gate — a static 3D character is rejected (Block 48) ==");
 {
   const { animationDriverViolation } = await import("./src/structure.mjs");
