@@ -148,8 +148,40 @@ function detectNode(node, html) {
   return { present: count >= (node.min || 1), count, anti: false };
 }
 
+// Bundle the FULL client source for structure/asset/animation analysis: the entry HTML PLUS every local
+// client-side .js/.mjs in the project. Modern games (and the served Node-app default) split logic into
+// engine.js / game.js / levels.js — analyzing only index.html misses all of it, so a basic split-file game
+// FALSELY PASSES the standard. Reading the project's JS alongside the HTML maps the real game. Reads from
+// disk (the served files ARE the workdir files); bounded; skips deps, the Node server, and vendored libs.
+// fsMod/pathMod injected for testability. Returns a single concatenated source string.
+export function bundleGameSource(entryHtml, workdir, fsMod, pathMod, { maxBytes = 1_500_000 } = {}) {
+  let src = String(entryHtml || "");
+  if (!workdir || !fsMod || !pathMod) return src;
+  const JS = new Set([".js", ".mjs", ".cjs"]);
+  const SKIP = new Set(["node_modules", ".git", ".proov", ".slivr", "dist", "build", "out", "vendor", "coverage"]);
+  let total = src.length;
+  const walk = (dir) => {
+    if (total >= maxBytes) return;
+    let ents;
+    try { ents = fsMod.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (total >= maxBytes) return;
+      const full = pathMod.join(dir, e.name);
+      if (e.isDirectory()) { if (!SKIP.has(e.name) && !e.name.startsWith(".")) walk(full); continue; }
+      if (!JS.has(pathMod.extname(e.name).toLowerCase())) continue;
+      if (/^server\.[mc]?js$/i.test(e.name)) continue;   // the Node http server is not client game code
+      let buf;
+      try { buf = fsMod.readFileSync(full, "utf8"); } catch { continue; }
+      src += "\n" + buf; total += buf.length;
+    }
+  };
+  walk(workdir);
+  return src;
+}
+
 // Score a built game's HTML/JS against the structure contract for its genre. STATIC channel only —
 // deterministic, no network, no browser. Returns the scorecard + the actionable missing-list.
+// Pass the BUNDLED source (bundleGameSource) when the game splits logic into external .js files.
 export function analyzeStructure(html, task = "") {
   const src = String(html || "");
   const genre = classifyGenre(task);
@@ -176,4 +208,42 @@ export function analyzeStructure(html, task = "") {
   // that builds the real layers passes; deliberately lenient to avoid false-blocking a decent game.
   const pass = zeroCategories.length <= 1 && requiredScore >= 55;
   return { genre, score, requiredScore, optionalScore, pass, zeroCategories, missing, antiHits, nodes: results.map((r) => ({ id: r.node.id, present: r.present, count: r.count, anti: r.anti })) };
+}
+
+// BEYOND-THE-FRAME enforcement (Block 66): a reference image is a ~1% SAMPLE — one screenshot of one moment,
+// NOT the whole game. A build that only reproduces the pictured scene (a single screen, no progression, no
+// game states) is incomplete: the agent must explore + build the full workflow beyond the frame. For a GAME,
+// flag a single-screen reproduction that lacks BOTH level progression AND game states (menu/win/lose). Scans
+// the bundled source; deterministic. Returns a message or null (has scope beyond one screen → fine).
+export function beyondFrameViolation(html, task = "") {
+  const s = String(html || "");
+  const isGame = /<canvas/i.test(s) && /(requestAnimationFrame|proovSim|slivrSim|getContext\s*\()/i.test(s);
+  if (!isGame) return null;
+  // DE-GAMED (Block 72): require STRUCTURAL evidence, not a bare keyword a lazy model can drop in. Progression
+  // = a real multi-element level array (≥2 objects/strings) OR an indexed advance into a levels collection.
+  // States = ≥2 DISTINCT game-state strings assigned (so a single `state="gameover"` decoration doesn't pass).
+  const hasProgression =
+    /\blevels?\s*[=:]\s*\[\s*[\[{][\s\S]*?[}\]]\s*,\s*[\[{]/.test(s)                 // levels = [ {..}, {..} ] (≥2)
+    || /\blevels?\s*[=:]\s*\[\s*["'][^"']+["']\s*,\s*["']/.test(s)                    // levels = [ "..", ".." ]
+    || /(loadlevel|load_level|advancelevel|nextlevel|gotolevel)\s*\(/i.test(s)        // a level-advance CALL
+    || (/\blevels?\b/i.test(s) && /\b(level|stage|wave|currentlevel|levelindex)\s*(\+\+|\+=|=\s*[a-z0-9_.]+\s*\+)/i.test(s)); // index into levels[] AND advance it
+  const stateStrings = new Set((s.match(/(?:screen|state|scene|mode|phase|gamestate)\s*[=:]\s*["'](menu|title|start|playing|play|win|won|lose|lost|gameover|game_over|victory|defeat|paused|pause)["']/gi) || [])
+    .map((m) => (m.match(/["'](\w+)["']/) || [])[1]));
+  const hasStates = stateStrings.size >= 2;
+  if (hasProgression || hasStates) return null;
+  return `this looks like only the PICTURED scene — a single screen. The reference image is a ~1% SAMPLE (one screenshot of one moment), NOT the whole game. Build the FULL game beyond the frame: multiple levels/areas, a start/menu screen, and win + lose states — the complete loop — in the SAME style as the sample. Explore what a complete version of this needs and build it, then finish.`;
+}
+
+// Ranked "what's not built YET" for the genre — required-missing first, then absent OPTIONAL layers, each by
+// weight. Feeds the Next-Step Suggester (Block 63): every item is a REAL gap the structure model found by
+// inspecting the build, so a suggestion can never hallucinate. Returns [{id,label,cat,required,weight}].
+export function structureGaps(html, task = "") {
+  const src = String(html || "");
+  const genre = classifyGenre(task);
+  return NODES
+    .filter((n) => n.applies.includes(genre) && !n.palette)   // palette is a quality check, not a buildable layer
+    .map((n) => ({ n, present: detectNode(n, src).present }))
+    .filter((x) => !x.present)
+    .map((x) => ({ id: x.n.id, label: x.n.label, cat: x.n.cat, required: !!x.n.required, weight: x.n.weight }))
+    .sort((a, b) => (Number(b.required) - Number(a.required)) || (b.weight - a.weight));
 }

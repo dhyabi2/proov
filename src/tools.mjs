@@ -19,10 +19,11 @@ import { buildSymbolIndex, findSymbol, findReferences, repoOverview, langOf, sym
 import { renderDom, renderShot, visibleText, screenshotWebGL, screenshotWebGLUrl } from "./eye.mjs";
 import { detectCommands, describeCommands } from "./project.mjs";
 import { detectStyle, styleBrief } from "./style.mjs";
-import { playGame, playLevels, autoPlay, extractLevels, autoPlayUrl, extractLevelsUrl } from "./gameharness.mjs";
+import { playGame, playLevels, autoPlay, extractLevels, autoPlayUrl, extractLevelsUrl, playGameUrl, playLevelsUrl } from "./gameharness.mjs";
 import { parse as parseLevel, certify as certifyLevel, recheck as recheckLevel } from "./levelcert.mjs";
 import { startServer, stopServer, listServers } from "./server.mjs";
-import { analyzeStructure, wantsMinimal, assetSourceViolation, animationDriverViolation } from "./structure.mjs";
+import { analyzeStructure, wantsMinimal, assetSourceViolation, animationDriverViolation, bundleGameSource } from "./structure.mjs";
+import { collectWorkspaceCode, taskFidelityMisses } from "./fidelity.mjs";
 import { isDestructive } from "./safety.mjs";
 import { renderAsset } from "./asset.mjs";
 import * as bp from "./blueprint.mjs";
@@ -32,6 +33,44 @@ import { compareImages, cropImage, compareRegions, styleProfile, styleAdherence,
 import { ARTKIT, ARTKIT3D, NOISE_FBM_SRC } from "./artkit.mjs";
 import { orbitScene } from "./scene3d.mjs";
 import * as world from "./world.mjs";
+
+// VISUAL-MATCH bar (Block 64): when the build must MATCH a reference image, every asset AND the whole scene
+// must reach this similarity % before done is accepted. Raised from 90 → 95 (the user's bar). A whole-scene
+// score averages out a single wrong asset, so the gate insists on a PER-ASSET pass (compare_regions).
+const VISUAL_MATCH_BAR = 95;
+// Filenames that look like a user-provided REFERENCE/mockup the build is meant to reproduce.
+const REFERENCE_RE = /^(reference|target|mockup|design|ref|goal|expected|comp)\b.*\.(png|jpe?g|webp|gif)$/i;
+
+// A served game is driven by URL, not a file path. The agent commonly passes the served URL in the `url`
+// slot OR (mistakenly) in `path` — accept BOTH so a URL never falls through to file resolution (which
+// returned FILE_NOT_FOUND and trapped the agent in an edit-the-server loop, Block 58). Returns the URL or "".
+export function pickUrl(url, rel) {
+  if (typeof url === "string" && /^https?:\/\//i.test(url)) return url;
+  if (typeof rel === "string" && /^https?:\/\//i.test(rel)) return rel;
+  return "";
+}
+
+// Vision INSPECTION for see_page {visual} (Block 69): a strong vision model DESCRIBES what's actually rendered
+// in detail and — if a goal is given — judges whether it MATCHES, listing what's missing/wrong. So see_page
+// (visual) actively VERIFIES instead of passively attaching a screenshot. Returns {seen,matches,missing}|null.
+async function visionInspect(provider, model, dataUrl, goal) {
+  if (!provider || typeof provider.chat !== "function" || !model || !dataUrl) return null;
+  const goalLine = goal
+    ? `\n\nThe INTENDED result (the goal) is:\n"${String(goal).slice(0, 500)}"\nJudge whether the screenshot MATCHES that goal, and list everything the goal requires that is MISSING, wrong, or only a placeholder.`
+    : "\n\nNo explicit goal was given — describe what's visible and flag anything blank/broken/placeholder.";
+  const prompt = `You are a STRICT visual QA inspector. LOOK at this screenshot of a rendered page and:\n1) Describe in DETAIL what is ACTUALLY visible — layout, main elements, on-screen text, colours, characters/sprites, and any blank/broken/placeholder areas. Be concrete; a plain rectangle is NOT a character, flat colour is NOT texture.${goalLine}\nReply with ONLY this JSON, no prose:\n{"seen":"<detailed description>","matches":true|false,"missing":["<required but absent/wrong>", ...]}`;
+  try {
+    const r = await provider.chat([{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: dataUrl } }] }], { model, temperature: 0 });
+    const m = String(r?.text || "").match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    const o = JSON.parse(m[0]);
+    const seen = typeof o.seen === "string" ? o.seen : (typeof o.description === "string" ? o.description : "");
+    if (!seen) return null;
+    const missing = Array.isArray(o.missing) ? o.missing.filter((x) => typeof x === "string" && x.trim()).map((x) => x.slice(0, 120)) : [];
+    const matches = goal ? (o.matches === true || /^(yes|true)$/i.test(String(o.matches))) : null;
+    return { seen: seen.slice(0, 1600), matches, missing };
+  } catch { return null; }
+}
 
 // Re-indent a replacement block to a target base indent (strip its own common indent, prepend target).
 function reindentBlock(block, indent) {
@@ -45,6 +84,7 @@ export class Tools {
   constructor(workdir, opts = {}) {
     this.workdir = path.resolve(workdir);
     this.opts = opts; // { apiKey, model, baseUrl } — used by the web tools
+    this.provider = opts.provider || null;   // injected so generate_image (Block 65) can call image generation
     // --- plan-mode + task-management state (lives on the Tools instance so both the tool
     //     implementations and the harness gate/UI can read it for the duration of a session) ---
     this.planMode = !!opts.planMode;     // when true, mutating tools are gated until a plan is approved
@@ -84,9 +124,13 @@ export class Tools {
     return { ok: true, steps: clean, revisions: this.plan.revisions, note: "Plan revised." };
   }
 
-  // task_write (proov): replace/update the live task checklist. tasks = [{id?, subject, status}],
-  // status ∈ pending|in_progress|completed. Items WITH a matching id update in place; items without
-  // an id (or a new id) are appended/created. Keep exactly one task in_progress at a time.
+  // task_write (proov): replace/update the live task checklist. tasks = [{id?, subject, status, check?}],
+  // status ∈ pending|in_progress|completed. Items WITH a matching id update in place; items without an id
+  // (or a new id) are appended/created. Keep exactly one task in_progress at a time.
+  // ACCEPTANCE CHECK (Block 68, from DTP's "never stack work on an unmet criterion"): a task may carry an
+  // executable `check` (a shell command — its ground-truth acceptance criterion). When a task TRANSITIONS to
+  // completed and has a check, proov RUNS it (exit 0 = pass); if it fails, the task is NOT marked completed
+  // (kept in_progress) and the failure is reported — so the agent fixes it before moving on.
   task_write({ tasks } = {}) {
     if (!Array.isArray(tasks)) return { ok: false, error: "NO_TASKS", hint: 'Pass tasks: [{subject, status}]' };
     const VALID = new Set(["pending", "in_progress", "completed"]);
@@ -94,28 +138,77 @@ export class Tools {
     let nextId = this.tasks.reduce((m, t) => Math.max(m, Number(t.id) || 0), 0);
     const order = [];
     const seen = new Set();
+    const checkFails = [];
+    const completeWithCheck = (t, prevStatus, check) => {
+      // run the acceptance check only on the transition INTO completed (not on every re-write).
+      if (!check || prevStatus === "completed") return "completed";
+      const r = this._runTaskCheck(check);
+      if (r.pass || r.skipped) return "completed";
+      checkFails.push({ subject: t.subject, check, reason: r.reason });
+      return "in_progress";   // criterion unmet → don't let it be marked done
+    };
     for (const raw of tasks) {
       if (!raw || typeof raw !== "object") continue;
       const subject = String(raw.subject ?? "").trim();
       let status = String(raw.status ?? "pending").trim();
       if (!VALID.has(status)) status = "pending";
+      const check = raw.check != null ? String(raw.check).trim() : null;
       let id = raw.id != null ? String(raw.id) : null;
       if (id && byId.has(id)) {
         const ex = byId.get(id);
+        const prev = ex.status;
         if (subject) ex.subject = subject;
-        ex.status = status;
+        if (check != null) ex.check = check || undefined;
+        ex.status = status === "completed" ? completeWithCheck(ex, prev, ex.check) : status;
         if (!seen.has(id)) { order.push(ex); seen.add(id); }
       } else {
         if (!subject) continue;
         id = id || String(++nextId);
         const t = { id, subject, status };
+        if (check) t.check = check;
+        if (status === "completed") t.status = completeWithCheck(t, "pending", t.check);
         byId.set(id, t);
         if (!seen.has(id)) { order.push(t); seen.add(id); }
       }
     }
     // task_write replaces the list with exactly what was passed (in the given order).
     this.tasks = order;
-    return { ok: true, tasks: this.tasks.map(t => ({ ...t })) };
+    const out = { ok: true, tasks: this.tasks.map(t => ({ ...t })) };
+    if (checkFails.length) {
+      out.checkFailed = checkFails;
+      out.note = `${checkFails.length} task${checkFails.length === 1 ? "" : "s"} could NOT be completed — the acceptance check failed (kept in_progress):\n${checkFails.map(f => `  ✗ ${f.subject}: ${f.reason}`).join("\n")}\nFix the code so the check passes (exit 0), then mark it completed again.`;
+    }
+    return out;
+  }
+
+  // Run a task's acceptance `check` shell command as a GROUND-TRUTH gate (Block 68): exit 0 = pass. Read-only
+  // by intent; a destructive command is refused, a missing tool is SKIPPED (graceful, like project-checks),
+  // and it's time-bounded. Returns { pass, skipped?, reason }.
+  _runTaskCheck(cmd) {
+    if (typeof cmd !== "string" || !cmd.trim()) return { pass: true, skipped: true };
+    if (isDestructive(cmd).blocked) return { pass: false, reason: `refused to run a destructive check command: ${cmd}` };
+    try {
+      const out = execSync(cmd, { cwd: this.workdir, stdio: ["ignore", "pipe", "pipe"], timeout: 30000, encoding: "utf8" });
+      return { pass: true, reason: `passed${out && out.trim() ? ": " + out.trim().slice(0, 100) : ""}` };
+    } catch (e) {
+      if (e.code === "ETIMEDOUT") return { pass: false, reason: "check timed out (30s)" };
+      if (e.status === 127 || /not found|command not found|no such file/i.test(String(e.stderr || e.message || ""))) return { pass: true, skipped: true, reason: "check tool not found — skipped" };
+      const err = (e.stderr || e.stdout || e.message || "").toString().trim();
+      return { pass: false, reason: `check failed: ${err.slice(0, 160)}` };
+    }
+  }
+
+  // Re-run every task's acceptance check at done-time (Block 68): the backstop that nothing marked complete
+  // regressed. Returns { checked, failures:[{subject,check,reason}] } or null when no task carries a check.
+  _verifyTaskChecks() {
+    const withChecks = (this.tasks || []).filter(t => t && typeof t.check === "string" && t.check.trim());
+    if (!withChecks.length) return null;
+    const failures = [];
+    for (const t of withChecks) {
+      const r = this._runTaskCheck(t.check);
+      if (!r.pass && !r.skipped) failures.push({ subject: t.subject, check: t.check, reason: r.reason });
+    }
+    return { checked: withChecks.length, failures };
   }
 
   // Visual richness of a game's CANVAS (not the surrounding page) — captures the canvas via toDataURL
@@ -193,8 +286,65 @@ export class Tools {
     } catch { return null; }
   }
 
+  // TASK-FIDELITY (Block 58, Tier 1): did the produced code actually USE what the prompt explicitly named?
+  // Mechanical grep of prompt-named entities (repos, quoted libs) against the workspace — no model, no
+  // sandbox. Returns { misses, checked, files } (misses = named things referenced NOWHERE in code), or null
+  // when there's nothing to check (no named requirement, or no code produced yet). Drives the done-gate's
+  // one-shot advisory push-back; never a hard block.
+  _verifyTaskFidelity(task) {
+    try {
+      if (typeof task !== "string" || !task) return null;
+      const code = collectWorkspaceCode(this.workdir, fs, path);
+      if (!code.files.length) return null;             // nothing built yet → don't gate
+      const r = taskFidelityMisses(task, code);
+      if (!r.checked.length) return null;              // prompt named nothing verifiable → nothing to gate
+      return r;
+    } catch { return null; }
+  }
+
+  // generate_image (Block 65, DESIGN-FIRST): generate a reference IMAGE from a text prompt and save it, so
+  // proov can draw the intended design BEFORE coding and then build to MATCH it (the visual-match gate
+  // enforces ≥95% per-asset against this file). out defaults to reference.png. Needs an image-output model
+  // (config.imageModel) + a key. async.
+  async generate_image({ prompt, out = "reference.png", model } = {}) {
+    if (!prompt || typeof prompt !== "string") return { ok: false, error: "NO_PROMPT", hint: 'pass {"prompt":"a 2D platformer scene: …","out":"reference.png"}' };
+    if (!this.provider || typeof this.provider.generateImage !== "function") return { ok: false, error: "NO_IMAGE_PROVIDER", hint: "image generation isn't available in this context" };
+    let absOut; try { absOut = this._resolve(out); } catch (e) { return { ok: false, error: e.message }; }
+    let r;
+    try { r = await this.provider.generateImage(prompt, { model }); }
+    catch (e) { if (e.name === "AbortError") throw e; r = { ok: false, error: String(e.message || e) }; }
+    if (!r.ok) return { ok: false, error: r.error, hint: r.hint || "couldn't generate the image — check imageModel + key" };
+    const m = /^data:image\/(\w+);base64,(.+)$/s.exec(r.dataUrl || "");
+    if (!m) return { ok: false, error: "BAD_IMAGE_DATA", hint: "the model didn't return a base64 image" };
+    try {
+      fs.mkdirSync(path.dirname(absOut), { recursive: true });
+      fs.writeFileSync(absOut, Buffer.from(m[2], "base64"));
+    } catch (e) { return { ok: false, error: `couldn't save the image: ${e.message}` }; }
+    return { ok: true, path: out, model: r.model, note: `generated a reference image (${r.model}) → ${out}. This is a ~1% SAMPLE of ONE scene — a style baseline, NOT the whole deliverable. Build the FULL game beyond the frame (all levels/states/the whole loop) in this style, AND match the pictured parts per-asset with compare_regions {target:"${out}", render:"<page>"} (every asset ≥95%).`,
+      multimodal: { kind: "image", path: out, mime: "image/png", dataUrl: r.dataUrl } };
+  }
+
+  // Detect a user-provided REFERENCE image the build is meant to reproduce (Block 64): scans the workdir
+  // top level + common asset folders for reference.png / mockup.* / design.* etc. Returns the relative path
+  // or null (most builds — from-scratch games, apps — have none, so the visual-match gate stays dormant).
+  _referenceImage() {
+    try {
+      for (const sub of ["", "assets", "reference", "public", "img", "images"]) {
+        const d = sub ? path.join(this.workdir, sub) : this.workdir;
+        let ents; try { ents = fs.readdirSync(d); } catch { continue; }
+        for (const name of ents) {
+          if (REFERENCE_RE.test(name)) return (sub ? sub + "/" : "") + name;
+        }
+      }
+      return null;
+    } catch { return null; }
+  }
+
   _resolve(rel) {
     if (typeof rel !== "string" || !rel) throw new Error("a 'path' string argument is required (you passed none)");
+    // A URL is not a file path: reject it with direction instead of silently resolving to a junk in-sandbox
+    // path that then reports FILE_NOT_FOUND (which the agent misread as a broken server — Block 58).
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(rel)) throw new Error(`'${rel}' is a URL, not a file path — pass it as {"url":"${rel}"} (see_page/play_game/autoplay accept a url for a running server). Do NOT edit the server because of this error.`);
     const abs = path.resolve(this.workdir, rel);
     const wd = this.workdir.endsWith(path.sep) ? this.workdir : this.workdir + path.sep;
     if (abs !== this.workdir && !abs.startsWith(wd)) {
@@ -290,12 +440,17 @@ export class Tools {
         execSync(c.cmd, { cwd: this.workdir, timeout: timeoutMs, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], shell: "/bin/bash" });
       } catch (e) {
         const blob = `${e.stdout || ""}\n${e.stderr || ""}\n${e.message || ""}`;
-        // graceful skip: toolchain/script absent or the check timed out → NOT a code failure
-        if (e.status === 127 || e.code === "ETIMEDOUT" || /command not found|missing script|: not found|no such file|ENOENT|cannot find module/i.test(blob)) {
-          skipped.push({ check: c.check, cmd: c.cmd, why: e.code === "ETIMEDOUT" ? "timed out" : "not runnable" });
+        // FAIL-CLOSED (Block 78): SKIP only when the TOOL or npm SCRIPT itself is genuinely absent (exit 127 /
+        // "command not found" / "missing script") — that's not the code's fault and can't be verified here.
+        // EVERYTHING else is a real FAILURE we must surface: a TIMEOUT is a hang (a bug), "cannot find module"
+        // means deps aren't installed (run install_deps), and "ENOENT / no such file" inside a non-127 run is
+        // a genuine test failure. Previously these were swallowed as skips → false "pass".
+        if (e.status === 127 || /command not found|missing script|^\s*\/bin\/(ba)?sh:.*not found/im.test(blob)) {
+          skipped.push({ check: c.check, cmd: c.cmd, why: "toolchain/script absent" });
           continue;
         }
-        failures.push({ check: c.check, cmd: c.cmd, output: `${e.stdout || ""}\n${e.stderr || ""}`.trim().slice(-1800) });
+        const why = e.code === "ETIMEDOUT" ? `TIMED OUT after ${Math.round(timeoutMs / 1000)}s (a hang is a failure, not a skip)\n` : "";
+        failures.push({ check: c.check, cmd: c.cmd, output: (why + `${e.stdout || ""}\n${e.stderr || ""}`).trim().slice(-1800) });
       }
     }
     return { ran: true, failures, skipped, checked: checks.map((c) => c.check) };
@@ -435,7 +590,49 @@ export class Tools {
   // FULL parity with the static gate — broken (see_page {url}), FROZEN (autoplay over HTTP), flat-boxes art
   // (canvas capture over HTTP), structure contract, and lock-and-key solvability (window.proovLevels over
   // HTTP). All HTTP-harness checks degrade gracefully (no browser → skipped). Returns { ran, problem }.
-  async _verifyServedGame({ task } = {}) {
+  // Capture the SERVED game's canvas over HTTP as a PNG data-URL (the URL analog of _gameCanvasDataURL) so
+  // the same vision judge that gates static games can look at a served game too (Block 58). async, null on fail.
+  async _servedCanvasDataURL(url) {
+    const cap = path.join(os.tmpdir(), `proov-servedshot-${process.pid}-${Date.now()}.png`);
+    try {
+      const shot = await screenshotWebGLUrl(url, cap);
+      if (!shot.ok) { try { fs.unlinkSync(cap); } catch { /* */ } return null; }
+      const b64 = fs.readFileSync(cap).toString("base64");
+      try { fs.unlinkSync(cap); } catch { /* */ }
+      return b64 ? "data:image/png;base64," + b64 : null;
+    } catch { try { fs.unlinkSync(cap); } catch { /* */ } return null; }
+  }
+
+  // LIGHT served-app check (Block 60): does the project actually SERVE a working entry page? Start the
+  // server (or reuse a running one), fetch the entry, and confirm it renders SOMETHING (not a dead/blank
+  // page or a non-2xx). Fast + generic (not game-specific) — used to gate the REPL "run it now?" offer so a
+  // served app is never offered to start without a basic works-check (symmetric to the static-HTML check).
+  // Returns { ran, problem, url }. ran:false ⇒ not a startable server → caller just offers.
+  async _verifyServedApp() {
+    let url = null, startedPid = null;
+    const running = listServers();
+    if (running.length) url = running[0].url;
+    else {
+      const cmd = this._serverStartCommand();
+      if (!cmd) return { ran: false };
+      const s = await startServer({ command: cmd, cwd: this.workdir, readyTimeoutMs: 12000 });
+      if (!s.ok) return { ran: true, problem: `the server didn't start (${s.error || "never listened on $PORT"})` };
+      url = s.url; startedPid = s.pid;
+    }
+    try {
+      const res = await this.http_request({ url, timeoutMs: 8000 });
+      if (!res || !res.ok || (res.status && res.status >= 400)) return { ran: true, problem: `the entry route ${url} returned ${res && res.status ? "HTTP " + res.status : "no response"} — the server doesn't serve the page.`, url };
+      let sp = null;
+      try { sp = await this.see_page({ url }); } catch { sp = null; }
+      if (sp && sp.broken) return { ran: true, problem: `the served page at ${url} is BROKEN: ${(sp.errors || []).slice(0, 3).join("; ")}`, url };
+      if (sp && sp.blank) return { ran: true, problem: `the served page at ${url} renders BLANK (no visible content) — likely a runtime JS error.`, url };
+      return { ran: true, problem: null, url };
+    } finally {
+      if (startedPid) stopServer(startedPid);
+    }
+  }
+
+  async _verifyServedGame({ task, visionCheck } = {}) {
     let url = null, startedPid = null;
     const running = listServers();
     if (running.length) url = running[0].url;
@@ -451,7 +648,7 @@ export class Tools {
       const html = res && res.ok ? res.body : "";
       const isGame = /<canvas/i.test(html) && /(requestAnimationFrame|proovSim|slivrSim|getContext\s*\()/i.test(html);
       if (!html || !isGame) return { ran: false };
-      const sp = this.see_page({ url });
+      const sp = await this.see_page({ url });
       if (sp && sp.broken) return { ran: true, problem: `the served page at ${url} is BROKEN: ${(sp.errors || []).slice(0, 3).join("; ")}` };
       if (!wantsMinimal(task)) {
         // FROZEN — drive it with real input over HTTP
@@ -464,17 +661,19 @@ export class Tools {
           const rich = await this._servedCanvasRichness(url);
           if (rich != null && rich < 18) return { ran: true, problem: `the served game's ART is flat PROGRAMMER ART (canvas richness ${rich}/100) — coloured boxes, not a real themed game.` };
         } catch { /* skip */ }
-        // STRUCTURE contract on the served HTML
-        const st = analyzeStructure(html, task);
+        // STRUCTURE contract — bundle the served HTML with the project's client .js (Block 61), so a
+        // split-file game (logic in engine.js/game.js the server serves) is mapped, not just the HTML shell.
+        const srcBundle = bundleGameSource(html, this.workdir, fs, path);
+        const st = analyzeStructure(srcBundle, task);
         if (!st.pass) {
           const punch = st.missing.slice(0, 9).map((m) => "  ✗ " + m.label + (m.anti ? " (placeholder / wrong primitive)" : "")).join("\n");
           return { ran: true, problem: `the SERVED game's STRUCTURE is only ~${st.requiredScore}% of a production game — ${st.zeroCategories.length} whole layer${st.zeroCategories.length === 1 ? "" : "s"} missing (${st.zeroCategories.join(", ") || "—"}):\n${punch}` };
         }
         // 3D ASSET SOURCE (Block 43): served 3D game must load vgsds GLBs, not hand-rolled primitives.
-        const av = assetSourceViolation(html, task);
+        const av = assetSourceViolation(srcBundle, task);
         if (av) return { ran: true, problem: av };
         // ANIMATION (Block 48): a served 3D character must animate its parts, not just translate.
-        const anv = animationDriverViolation(html, task);
+        const anv = animationDriverViolation(srcBundle, task);
         if (anv) return { ran: true, problem: anv };
         // LOCK-AND-KEY solvability — certify window.proovLevels exposed over HTTP
         try {
@@ -485,8 +684,18 @@ export class Tools {
             if (fails.length) return { ran: true, problem: `${fails.length} of ${cert.levels} served level${cert.levels === 1 ? "" : "s"} can permanently STRAND the player (soft-lock / unsolvable). Fix the key/door economy.` };
           }
         } catch { /* skip */ }
+        // SEMANTIC FIDELITY (Block 58): the SAME vision checklist the static gate runs — a model LOOKS at
+        // the served canvas and confirms the request's concrete visual requirements are actually present.
+        // Run here (inside the live-server window) via a callback, since the provider/verifyModel live in
+        // the loop, not in Tools. Without this the served gate accepted "renders fine but basic" games.
+        if (typeof visionCheck === "function") {
+          try {
+            const dataUrl = await this._servedCanvasDataURL(url);
+            if (dataUrl) { const vp = await visionCheck(dataUrl); if (vp) return { ran: true, problem: vp, url }; }
+          } catch { /* no browser/key → skip */ }
+        }
       }
-      return { ran: true, problem: null };
+      return { ran: true, problem: null, url };
     } finally {
       if (startedPid) stopServer(startedPid);
     }
@@ -765,7 +974,26 @@ export class Tools {
   // system browser. DEFAULT is text-first + cheap: returns the post-JS RENDERED visible text (catches a
   // literal "\n" on screen, a blank page, wrong text) with no vision-token cost. Pass visual:true for a
   // SCREENSHOT (attached to the model) when you need to judge layout/visual appearance.
-  see_page({ path: rel, url, visual } = {}) {
+  // Build the see_page {visual} result: attach the screenshot AND (when a vision verifyModel + key are
+  // available) a written WHAT'S-VISIBLE description + goal-match verdict (Block 69). extra carries path/url.
+  async _inspectShot(label, dataUrl, browser, goal, extra = {}) {
+    const mm = { kind: "image", path: `${label} (rendered)`, mime: "image/png", dataUrl };
+    const vm = this.opts && this.opts.verifyModel;
+    let insp = null;
+    if (this.provider && typeof this.provider.hasKey === "function" && this.provider.hasKey() && vm && vm !== "none") {
+      try { insp = await visionInspect(this.provider, vm, dataUrl, goal); } catch { insp = null; }
+    }
+    if (insp) {
+      const verdict = (goal != null && insp.matches != null)
+        ? `\nGOAL: ${String(goal).slice(0, 240)}\nMATCH: ${insp.matches ? "YES ✓" : "NO ✗"}${insp.missing.length ? `\nMISSING / WRONG vs goal:\n${insp.missing.slice(0, 8).map((m) => "  ✗ " + m).join("\n")}` : ""}`
+        : (insp.missing.length ? `\nNOTABLE GAPS:\n${insp.missing.slice(0, 8).map((m) => "  • " + m).join("\n")}` : "");
+      const tip = goal == null ? `\n(Pass goal:"…" so I verify the render against what it SHOULD show.)` : "";
+      return { ok: true, ...extra, seen: insp.seen, matches: insp.matches, missing: insp.missing, multimodal: mm, note: `rendered ${label} (${browser}).\nWHAT'S VISIBLE: ${insp.seen}${verdict}${tip}` };
+    }
+    return { ok: true, ...extra, multimodal: mm, note: `rendered ${label} (${browser}) — screenshot shown to you${vm && vm !== "none" ? "" : " (set verifyModel to also get a written what's-visible + goal-match check)"}${goal ? ` · goal: ${String(goal).slice(0, 120)}` : ""}` };
+  }
+
+  async see_page({ path: rel, url, visual, goal } = {}) {
     // SERVED PAGE: a running Node app (start_server) is checked over http://localhost:PORT, not file://.
     // The static JS-syntax / file checks don't apply to a served route, so this renders the URL and
     // reports the post-JS visible text (or a screenshot with visual:true) + a blank-page check.
@@ -776,7 +1004,7 @@ export class Tools {
         if (!r.ok) return { ok: false, error: r.error, hint: "couldn't screenshot the URL — is the server running? try see_page (text mode) or http_request" };
         let b64; try { b64 = fs.readFileSync(out).toString("base64"); } catch (e) { return { ok: false, error: String(e.message || e) }; }
         try { fs.unlinkSync(out); } catch { /* */ }
-        return { ok: true, url, multimodal: { kind: "image", path: `${url} (rendered)`, mime: "image/png", dataUrl: `data:image/png;base64,${b64}` }, note: `rendered ${url} (${r.browser}) — screenshot shown to you` };
+        return await this._inspectShot(`${url}`, `data:image/png;base64,${b64}`, r.browser, goal, url ? { url } : {});
       }
       const d = renderDom(url);
       if (!d.ok) return { ok: false, error: d.error, hint: "couldn't load the URL — is the server up? (start_server returns the url + port)" };
@@ -794,7 +1022,7 @@ export class Tools {
       if (!r.ok) return { ok: false, error: r.error, hint: "couldn't get a visual — use see_page (text mode) or reason about the code" };
       let b64; try { b64 = fs.readFileSync(out).toString("base64"); } catch (e) { return { ok: false, error: String(e.message || e) }; }
       try { fs.unlinkSync(out); } catch { /* ignore */ }
-      return { ok: true, path: rel, multimodal: { kind: "image", path: `${rel} (rendered)`, mime: "image/png", dataUrl: `data:image/png;base64,${b64}` }, note: `rendered ${rel} (${r.browser}) — screenshot shown to you` };
+      return await this._inspectShot(rel, `data:image/png;base64,${b64}`, r.browser, goal, { path: rel });
     }
     // CATCH BROKEN PAGES (Block 27): static JS syntax check + runtime console-error capture. A SyntaxError
     // leaves the DOM intact (so it "looks fine") but nothing runs → blank page. Surface these FIRST.
@@ -828,8 +1056,20 @@ export class Tools {
   // games. The game must expose window.proovSim={reset,step,input,state}; this resets it, applies a
   // scripted input timeline, steps N frames, and returns the game STATE over time + a final-frame
   // screenshot, so you can verify it actually plays (moves, scores, ends) and fix what doesn't.
-  play_game({ path: rel, steps, dt, inputs, seed } = {}) {
-    if (!rel) return { ok: false, error: "NO_PATH", hint: 'pass {"path":"index.html","inputs":[{"at":0,"key":"ArrowRight","down":true}],"steps":120}' };
+  async play_game({ path: rel, url, steps, dt, inputs, seed } = {}) {
+    // SERVED GAME: a URL (in `url`, or mistakenly in `path`) drives the running server over HTTP — NOT a
+    // local file. Without this, a URL fell through to _resolve+existsSync → FILE_NOT_FOUND, which the agent
+    // misread as a broken server and "fixed" server.js in an endless loop (Block 58).
+    const u = pickUrl(url, rel);
+    if (u) {
+      let r; try { r = await playGameUrl(u, { steps, dt, inputs, seed }); } catch (e) { r = { ok: false, error: String(e.message || e) }; }
+      if (!r.ok) return { ok: false, error: r.error, hint: "couldn't drive the SERVED game over the URL — is the server up (start_server) and the route returning the game HTML? Don't edit the server on a drive failure; check the page renders with see_page {url} first." };
+      const res = r.result || {};
+      if (res.error) return { ok: true, played: false, note: `could not drive the served game: ${res.error}. Expose window.proovSim={reset,step,input,state} to make it playtestable.` };
+      const snaps = res.snapshots || [];
+      return { ok: true, played: true, snapshots: snaps, note: `played the SERVED game (${u}) ${res.steps} steps · ${snaps.length} state snapshots:\n${JSON.stringify(snaps).slice(0, 2200)}` };
+    }
+    if (!rel) return { ok: false, error: "NO_PATH", hint: 'pass {"path":"index.html",...} for a file, or {"url":"http://localhost:PORT"} for a running server' };
     let abs; try { abs = this._resolve(rel); } catch (e) { return { ok: false, error: e.message }; }
     if (!fs.existsSync(abs)) return { ok: false, error: "FILE_NOT_FOUND", path: rel };
     const r = playGame(abs, { steps, dt, inputs, seed });
@@ -846,11 +1086,19 @@ export class Tools {
   // window.proovSim contract — and the agent can stub that with a no-op input), this drives the game's OWN
   // keydown/click handlers, so a frozen/dead game is caught even when the contract lies. Returns whether it
   // RESPONDS to input, the per-input screen-change %, console errors, and a contact sheet you SEE.
-  autoplay({ path: rel, keys, clicks, holdMs } = {}) {
-    if (!rel) return { ok: false, error: "NO_PATH", hint: 'pass {"path":"index.html"} — drives real arrow/space/click input' };
-    let abs; try { abs = this._resolve(rel); } catch (e) { return { ok: false, error: e.message }; }
-    if (!fs.existsSync(abs)) return { ok: false, error: "FILE_NOT_FOUND", path: rel };
-    const r = autoPlay(abs, { keys, clicks, holdMs });
+  async autoplay({ path: rel, url, keys, clicks, holdMs } = {}) {
+    const u = pickUrl(url, rel);
+    let r;
+    if (u) {
+      // SERVED GAME over HTTP (Block 58) — same real-input drive via the injecting proxy.
+      try { r = await autoPlayUrl(u, { keys, clicks, holdMs }); } catch (e) { r = { ok: false, error: String(e.message || e) }; }
+      if (!r.ok) return { ok: false, error: r.error, hint: "couldn't autoplay the SERVED game — is the server up (start_server)? Don't edit the server on a drive failure; check see_page {url} renders first." };
+    } else {
+      if (!rel) return { ok: false, error: "NO_PATH", hint: 'pass {"path":"index.html"} for a file, or {"url":"http://localhost:PORT"} for a running server' };
+      let abs; try { abs = this._resolve(rel); } catch (e) { return { ok: false, error: e.message }; }
+      if (!fs.existsSync(abs)) return { ok: false, error: "FILE_NOT_FOUND", path: rel };
+      r = autoPlay(abs, { keys, clicks, holdMs });
+    }
     if (!r.ok) return { ok: false, error: r.error, hint: "couldn't autoplay — is Chrome installed?" };
     const errs = r.errors && r.errors.length ? ` Console errors: ${r.errors.slice(0, 4).join("; ")}.` : "";
     const verdict = r.responds
@@ -866,11 +1114,19 @@ export class Tools {
   // loads, is DISTINCT (not a clone of level 1 — the usual failure), plays, and (if state exposes a win
   // flag) is completable, plus a contact sheet of every level's initial frame. The game must extend the
   // Simulacrum contract with window.proovSim.levels (count or array) + load(i) (or reset(i)).
-  play_levels({ path: rel, steps, dt, inputs, cap } = {}) {
-    if (!rel) return { ok: false, error: "NO_PATH", hint: 'pass {"path":"index.html"} — the multi-level game' };
-    let abs; try { abs = this._resolve(rel); } catch (e) { return { ok: false, error: e.message }; }
-    if (!fs.existsSync(abs)) return { ok: false, error: "FILE_NOT_FOUND", path: rel };
-    const r = playLevels(abs, { steps, dt, inputs, cap });
+  async play_levels({ path: rel, url, steps, dt, inputs, cap } = {}) {
+    const u = pickUrl(url, rel);
+    let r;
+    if (u) {
+      // SERVED multi-level game over HTTP (Block 58).
+      try { r = await playLevelsUrl(u, { steps, dt, inputs, cap }); } catch (e) { r = { ok: false, error: String(e.message || e) }; }
+      if (!r.ok) return { ok: false, error: r.error, hint: r.hint || "couldn't drive levels on the SERVED game — is the server up (start_server)? expose proovSim.levels + load(i). Don't edit the server on a drive failure." };
+    } else {
+      if (!rel) return { ok: false, error: "NO_PATH", hint: 'pass {"path":"index.html"} for a file, or {"url":"http://localhost:PORT"} for a running server' };
+      let abs; try { abs = this._resolve(rel); } catch (e) { return { ok: false, error: e.message }; }
+      if (!fs.existsSync(abs)) return { ok: false, error: "FILE_NOT_FOUND", path: rel };
+      r = playLevels(abs, { steps, dt, inputs, cap });
+    }
     if (!r.ok) return { ok: false, error: r.error, hint: r.hint || "couldn't drive levels — is Chrome installed? expose proovSim.levels + load(i)" };
     const broken = r.levels.filter((l) => !l.loads || !l.plays).map((l) => l.level);
     const clonesNote = r.clones.length ? ` CLONES: levels ${r.clones.join(",")} are identical to another level — make them meaningfully different (layout/enemies/goal).` : "";
@@ -1033,8 +1289,11 @@ export class Tools {
       const r = compareImages(targetAbs, candAbs, { grid });
       if (!r.ok) return { ok: false, error: r.error, hint: "couldn't diff — is Chrome installed and are both files real images?" };
       const worst = r.worst.map((w) => `${w.region} (${w.sim}% match)`).join(", ");
-      const verdict = r.similarity >= 90 ? "close match" : r.similarity >= 75 ? "getting there — keep refining" : "far off — fix the worst regions and re-compare";
-      const out = { ok: true, similarity: r.similarity, mae: r.mae, worstRegions: r.worst, note: `${r.similarity}% similar to the target — ${verdict}. Worst regions: ${worst || "n/a"}. Look at the heatmap (red = mismatch), fix those areas, and compare again.` };
+      const verdict = r.similarity >= VISUAL_MATCH_BAR ? "close match" : r.similarity >= 75 ? "getting there — keep refining" : "far off — fix the worst regions and re-compare";
+      // Record for the done-gate (Block 64). Whole-scene only (perAsset:false) — a whole-scene score can hide
+      // a wrong asset, so the gate still asks for a PER-ASSET compare_regions pass when a reference is present.
+      this.lastVisualMatch = { ran: true, perAsset: false, allPass: r.similarity >= VISUAL_MATCH_BAR, whole: r.similarity, assetsOff: [], worst, target };
+      const out = { ok: true, similarity: r.similarity, mae: r.mae, worstRegions: r.worst, note: `${r.similarity}% similar to the target — ${verdict} (bar ≥${VISUAL_MATCH_BAR}%). Worst regions: ${worst || "n/a"}. Look at the heatmap (red = mismatch), fix those areas, and compare again. For a real verdict, compare_regions PER-ASSET (a high whole-scene score can hide a wrong asset).` };
       if (r.dataUrl) out.multimodal = { kind: "image", path: "diff", mime: "image/png", dataUrl: r.dataUrl };
       return out;
     } finally { if (tmpShot) { try { fs.unlinkSync(tmpShot); } catch { /* */ } } }
@@ -1083,11 +1342,14 @@ export class Tools {
     try {
       const r = compareRegions(targetAbs, candAbs, regions);
       if (!r.ok) return { ok: false, error: r.error, hint: "couldn't diff regions — is Chrome installed and both files real images?" };
-      const off = r.regions.filter((x) => x.similarity < 90);
+      const off = r.regions.filter((x) => x.similarity < VISUAL_MATCH_BAR);
       const worst = r.regions.slice(0, 6).map((x) => `${x.label}: ${x.similarity}%`).join(", ");
-      const pass = off.length === 0 && r.whole >= 90;
+      const pass = off.length === 0 && r.whole >= VISUAL_MATCH_BAR;
+      // Record for the done-gate (Block 64): the last PER-ASSET match against a reference. The gate won't
+      // accept done while a reference is present and the render isn't matched per-asset at the bar.
+      this.lastVisualMatch = { ran: true, perAsset: true, allPass: pass, whole: r.whole, assetsOff: off.map((x) => x.label), worst, target };
       const out = { ok: true, whole: r.whole, regions: r.regions, assetsOff: off.map((x) => x.label), allPass: pass,
-        note: `whole scene ${r.whole}% · ${r.regions.length - off.length}/${r.regions.length} assets ≥90%. ${pass ? "All assets and the whole scene pass." : `Fix these assets next (worst first): ${worst}. A high whole-scene score can still hide a wrong asset — chase the per-asset reds.`}` };
+        note: `whole scene ${r.whole}% · ${r.regions.length - off.length}/${r.regions.length} assets ≥${VISUAL_MATCH_BAR}%. ${pass ? "All assets and the whole scene pass." : `Fix these assets next (worst first): ${worst}. A high whole-scene score can still hide a wrong asset — chase the per-asset reds.`}` };
       if (r.dataUrl) out.multimodal = { kind: "image", path: "scorecard", mime: "image/png", dataUrl: r.dataUrl };
       return out;
     } finally { if (tmpShot) { try { fs.unlinkSync(tmpShot); } catch { /* */ } } }

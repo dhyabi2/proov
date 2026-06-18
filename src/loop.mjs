@@ -13,7 +13,7 @@ import { buildMultimodalContent } from "./multimodal.mjs";
 import { applyControl, controlToMessage } from "./bridge.mjs";
 import { compressContext } from "./compress.mjs";
 import { isWebGLPage } from "./webcheck.mjs";
-import { analyzeStructure, wantsMinimal, assetSourceViolation, animationDriverViolation } from "./structure.mjs";
+import { analyzeStructure, wantsMinimal, assetSourceViolation, animationDriverViolation, bundleGameSource, beyondFrameViolation } from "./structure.mjs";
 
 // Detect a built WEB GAME in the workdir (a canvas + an animation loop / control contract), so the
 // done-gate can verify it actually PLAYS before accepting done. Returns the html path or null.
@@ -26,13 +26,58 @@ export function isGameHtml(html) {
   const hasLoopOrContract = /(requestAnimationFrame|proovSim|slivrSim|getContext\s*\()/i.test(s);
   return hasLoopOrContract && (/<canvas/i.test(s) || isWebGLPage(s));
 }
-function detectGameFile(workdir) {
+export function detectGameFile(workdir) {
   for (const name of ["index.html", "game.html"]) {
     try {
       if (isGameHtml(fs.readFileSync(path.join(workdir, name), "utf8"))) return name;
     } catch { /* not there */ }
   }
   return null;
+}
+
+// Does this task describe a VISUAL build (something whose LOOK matters — a game/UI/site)? Conservative +
+// keyword-based: a clear non-visual deliverable (cli/api/script/library/backend) opts out so we never draw a
+// reference for a text-only job. Drives the design-first preflight (Block 67).
+// Tools that MUTATE the workspace — used by the plan-first gate (Block 73).
+const MUTATING_TOOLS = new Set(["edit_file", "edit_files", "edit_symbol", "create_file", "write_file"]);
+// A SUBSTANTIAL task warrants an up-front plan: long, or multi-clause / lists several deliverables. A short
+// single-action task ("fix the typo on line 4") never trips the plan-first gate.
+export function isSubstantialTask(task) {
+  const s = String(task || "").trim();
+  if (s.length < 30) return false;                 // truly trivial one-liners never trip it
+  const clauses = (s.match(/\b(and|then|also|plus|with|including|as well as)\b|[,;]|\b\d[.)]/gi) || []).length;
+  return clauses >= 2 || s.length > 180;
+}
+
+export function isVisualBuild(task) {
+  const t = String(task || "").toLowerCase();
+  if (!t.trim()) return false;
+  if (/\b(cli|api|backend|server-only|script|library|package|parser|algorithm|refactor|unit test|regex|sql|cron|webhook|bug ?fix)\b/.test(t)) return false;
+  return /\b(game|puzzle|platformer|shooter|rpg|arcade|sokoban|roguelike|metroidvania|maze|tetris|snake|ui|interface|website|web ?app|web ?page|landing ?page|dashboard|portfolio|mockup|design|clone|recreate|render|canvas|webgl|three\.?js|3d|2d|sprite|animation|scene|level)\b/.test(t);
+}
+// True when the workdir already has a built page/game (a follow-up to existing code) — don't inject a fresh
+// reference mid-project; the design should have been drawn at the start.
+function hasExistingBuild(workdir) {
+  if (detectGameFile(workdir)) return true;
+  for (const name of ["index.html", "game.html", "index.htm"]) {
+    try { if (fs.statSync(path.join(workdir, name)).size > 400) return true; } catch { /* */ }
+  }
+  return false;
+}
+
+// Run BEFORE the first build turn: for a fresh VISUAL build with no reference yet, DRAW the target first
+// (deterministic — don't rely on the model to remember). Saves reference.png so the visual-match + beyond-
+// frame gates have something to enforce. Returns the saved path, or null (no-op). Block 67.
+async function designFirstPreflight({ tools, task, provider }) {
+  if (!tools || typeof tools.generate_image !== "function" || typeof tools._referenceImage !== "function" || !tools.workdir) return null;
+  if (!provider || !provider.imageModel) return null;
+  if (typeof provider.hasKey === "function" && !provider.hasKey()) return null;
+  if (tools._referenceImage()) return null;            // already have a reference
+  if (!isVisualBuild(task)) return null;               // only visual/game builds
+  if (hasExistingBuild(tools.workdir)) return null;    // a follow-up to existing code → don't inject one now
+  const prompt = `A polished, complete reference screenshot/mockup of the intended visual design — style, characters, colours, UI and layout — for this build: ${String(task).slice(0, 600)}. One representative scene, production quality.`;
+  const r = await tools.generate_image({ prompt, out: "reference.png" });
+  return r && r.ok ? (r.path || "reference.png") : null;
 }
 
 // SEMANTIC VISION CHECKLIST (Block 37): the deterministic gates check STRUCTURE (renders, responds, not
@@ -168,12 +213,17 @@ export function reasoningProse(text) {
   return s.slice(0, i).replace(/```\w*/g, "").replace(/\s+/g, " ").trim();
 }
 
-export async function runLoop({ provider, tools, toolMap, systemPrompt, task, maxSteps = Infinity, onStep, onToolStart, onThinking, beforeTool, seedMessages, signal, verify, maxRepairs = 3, bridge, editModel, compress, verifyModel }) {
+export async function runLoop({ provider, tools, toolMap, systemPrompt, task, maxSteps = Infinity, onStep, onToolStart, onThinking, beforeTool, seedMessages, signal, verify, maxRepairs = 3, bridge, editModel, compress, verifyModel, designFirst = true, emit = () => {} }) {
   // DUAL-MODEL ROUTING (optional): a CREATOR model (provider.model) builds/creates; an EDITOR model
   // (editModel) handles editing/bug-fixing. We pick per turn from the most recent mutation: while the
   // agent is creating files it stays on the creator; once it edits existing code it uses the editor.
   let editPhase = false;   // false → creator model; true → editor model
   const EDIT_TOOLS = new Set(["edit_file", "edit_files", "edit_symbol"]);
+  // Visual-verification tools (Block 59): used to detect the screenshot-thrash anti-pattern. see_page counts
+  // only with visual:true (text-mode see_page is a cheap, legit syntax/blank check). 4 visual checks with no
+  // task completed between them ⇒ the agent is steering by eye instead of building → one nudge to go work.
+  const VISUAL_TOOLS = new Set(["art_review", "compare_image", "compare_regions", "see_asset", "style_check"]);
+  const VISUAL_THRASH_CAP = 4;
   const messages = seedMessages && seedMessages.length
     ? seedMessages
     : [{ role: "system", content: systemPrompt }];
@@ -202,7 +252,15 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
   let denials = 0; const DENIAL_STOP = 6;   // bail out of a denial storm (every edit refused → no progress)
   let doneTaskNudged = false;   // push back ONCE when done is called with incomplete checklist tasks
   let gameGateDone = false;     // push back ONCE when done is called on a game that doesn't actually play
+  let taskFidelityDone = false; // Block 58: push back ONCE when done is called but a prompt-named requirement is unreferenced
+  let planNudged = false;       // Block 73: push back ONCE to decompose a substantial task before the first edit
+  let visualMatchTries = 0;     // Block 64: block done until the render matches a reference image per-asset ≥95% (capped)
+  let taskCheckTries = 0;       // Block 68: block done while any task's executable acceptance check fails (capped)
   let replanNudged = false;   // Block 5: nudge to re-plan once per failure streak (when a plan exists)
+  // SCREENSHOT-THRASH guard (Block 59): a weak model falls into edit→see_page→edit→see_page — micro-edits
+  // each followed by a visual check, burning turns while the real tasks never get built. Count visual checks
+  // since the last task COMPLETION; past a cap with work still open, nudge ONCE to go build, then watch.
+  let visualSinceProgress = 0, visualThrashNudged = false, lastCompletedCount = 0;
 
   let aborted = false;
   // CONTROL CHECKPOINT (Block 22): drain any control commands from the driving agent in the inter-turn
@@ -227,6 +285,17 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
       for (const raw of bridge.poll()) { handle(raw); if (aborted) return; }
     }
   };
+  // DESIGN-FIRST PREFLIGHT (Block 67): the design-first rule was prompt-only, so a weak model just skipped
+  // generate_image and the visual-match/beyond-frame gates stayed dormant (no reference → nothing to enforce).
+  // Make it deterministic: for a FRESH visual build with no reference yet, proov DRAWS the reference itself
+  // BEFORE the agent codes — so the gates have a target to enforce. No-op for non-visual tasks, follow-ups to
+  // existing code, or when image gen isn't available. Runs once (guarded by _referenceImage()).
+  if (designFirst) {
+    try {
+      const made = await designFirstPreflight({ tools, task, provider });
+      if (made) { trace.push({ step: 0, designFirst: made }); if (onStep) onStep({ step: 0, tool: "generate_image", args: { out: made }, result: { ok: true, note: `drew a reference (${made}) before coding — building to match it` } }); }
+    } catch { /* preflight must never break the run */ }
+  }
   for (let step = 0; step < maxSteps; step++) {
     if (signal?.aborted) { aborted = true; trace.push({ step, aborted: true }); break; }
     if (bridge) { await applyBridgeControl(); if (aborted) { trace.push({ step, aborted: true }); break; } }
@@ -275,18 +344,119 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
         doneTaskNudged = true; noProgress = 0;
         messages.push({ role: "user", content: `You called done, but ${openTasks.length} task${openTasks.length === 1 ? " is" : "s are"} still NOT completed on your checklist:\n${openTasks.slice(0, 8).map((t) => "  ☐ " + t.subject).join("\n")}\nDo NOT declare done with unfinished tasks. FINISH each one for real and VERIFY it (a game: see_page/play_levels/autoplay), then mark it completed with task_write — only THEN call done. If a listed task is genuinely already done, mark it completed first.` });
         trace.push({ step, doneTaskNudge: openTasks.length });
+        emit({ type: "gate", gate: "tasks", ok: false, detail: ` open task(s)` });
         continue;
+      }
+      // PER-TASK ACCEPTANCE GATE (Block 68, from DTP — "never stack work on an unmet criterion"): a task can
+      // carry an executable `check` (its ground-truth acceptance criterion). Don't accept done while any task's
+      // check FAILS — re-run them and push back with the failing ones. Ground-truth (runs the command), bounded
+      // (≤3) so a flaky/slow check can't deadlock. Dormant when no task carries a check.
+      if (taskCheckTries < 3 && tools && typeof tools._verifyTaskChecks === "function") {
+        let tc = null;
+        try { tc = tools._verifyTaskChecks(); } catch { tc = null; }
+        if (tc && tc.failures && tc.failures.length) {
+          taskCheckTries++; noProgress = 0;
+          const punch = tc.failures.slice(0, 6).map((f) => `  ✗ ${f.subject}: ${f.reason}`).join("\n");
+          messages.push({ role: "user", content: `You called done, but ${tc.failures.length} task acceptance check${tc.failures.length === 1 ? "" : "s"} FAIL:\n${punch}\nA task's \`check\` is its ground-truth acceptance criterion — fix the code so each check passes (exit 0), then call done.` });
+          trace.push({ step, taskCheckGate: tc.failures.length });
+          emit({ type: "gate", gate: "task-check", ok: false, detail: ` failing check(s)` });
+          continue;
+        }
+      }
+      // TASK-FIDELITY GATE (Block 58): the other gates prove the artifact WORKS; this proves it did what was
+      // ASKED. If the prompt explicitly NAMED something to use (a github repo, a quoted library) and that name
+      // appears NOWHERE in the produced code, the central requirement was almost certainly skipped. One-shot,
+      // advisory (never a hard block): nudge once, then let the agent stop on the next done. Pure mechanical
+      // grep — no model call, near-zero false-rejection risk for the "named thing entirely absent" case.
+      if (!taskFidelityDone && tools && typeof tools._verifyTaskFidelity === "function" && tools.workdir) {
+        taskFidelityDone = true;   // checked once — clean or not, don't re-run every done
+        let tf = null;
+        try { tf = tools._verifyTaskFidelity(task); } catch { tf = null; }
+        if (tf && tf.misses && tf.misses.length) {
+          noProgress = 0;
+          const punch = tf.misses.slice(0, 6).map((m) => `  ✗ "${m.entity}" — searched for ${m.stems.slice(0, 3).map((s) => "`" + s + "`").join(", ")}; found in NO code file`).join("\n");
+          messages.push({ role: "user", content: `You called done, but the prompt explicitly asked you to USE something your code never references:\n${punch}\n(checked ${tf.files} code file${tf.files === 1 ? "" : "s"}, excluding docs + .proov metadata.)\nThis usually means you built a generic solution and skipped the actual requirement. Go ACTUALLY use it — import or vendor it, call its API, wire it into the program — then verify and call done. If you addressed it under a different name, make that reference explicit in the code (an import or a comment naming it) so it's verifiable.` });
+          trace.push({ step, taskFidelity: { misses: tf.misses.map((m) => m.entity), files: tf.files } });
+          emit({ type: "gate", gate: "fidelity", ok: false, detail: tf.misses.map((m) => m.entity).join(", ") });
+          continue;
+        }
+      }
+      // VISUAL-MATCH GATE (Block 64): when the build is meant to reproduce a REFERENCE image (a mockup/design),
+      // don't accept done until the render MATCHES it PER-ASSET at the bar (≥95%) — a whole-scene score averages
+      // out a single wrong asset, so per-asset is required. Only fires when a reference image is present (a
+      // from-scratch build has none → never blocks). Bounded (≤3 push-backs) so a model that can't reach the bar
+      // can't deadlock. Two cases: a per-asset compare ran but FAILED → name the assets; no per-asset compare
+      // was run yet → require compare_regions.
+      if (visualMatchTries < 3 && tools && typeof tools._referenceImage === "function" && tools.workdir) {
+        const refImg = tools._referenceImage();
+        if (refImg) {
+          const lm = tools.lastVisualMatch;
+          let problem = null;
+          if (lm && lm.ran && lm.perAsset && !lm.allPass) {
+            problem = `the render does NOT match the reference (${refImg}) yet — assets below 95%: ${(lm.assetsOff || []).slice(0, 8).join(", ") || lm.worst || "see the scorecard"}. Fix those exact assets/positions, re-run compare_regions, and only finish when EVERY asset ≥95% AND the whole scene ≥95% (allPass).`;
+          } else if (!lm || !lm.perAsset || lm.target !== refImg) {
+            problem = `there's a reference image (${refImg}) this build must match, but you haven't verified the render against it PER-ASSET. Run compare_regions {target:"${refImg}", render:"<your page>", regions:[…one box per asset…]} and fix until EVERY asset ≥95% AND the whole scene ≥95% (allPass), THEN call done. A whole-scene compare_image score averages out a wrong asset — verify per-asset.`;
+          } else {
+            // BEYOND THE FRAME (Block 66): the per-asset match passed — but the reference is a ~1% SAMPLE of
+            // ONE scene. Don't accept a single-screen reproduction; require the full game beyond the frame.
+            try {
+              const gf = detectGameFile(tools.workdir);
+              let entry = ""; try { entry = gf ? fs.readFileSync(path.join(tools.workdir, gf), "utf8") : ""; } catch { /* */ }
+              const bf = beyondFrameViolation(bundleGameSource(entry, tools.workdir, fs, path), task);
+              if (bf) { problem = bf; trace.push({ step, beyondFrame: 1 }); emit({ type: "gate", gate: "beyond", ok: false }); }
+            } catch { /* couldn't read → don't block */ }
+          }
+          if (problem) {
+            visualMatchTries++; noProgress = 0;
+            messages.push({ role: "user", content: `You called done, but the visual match to the reference isn't met: ${problem}` });
+            trace.push({ step, visualMatchGate: clip(problem, 80) });
+            emit({ type: "gate", gate: "visual", ok: false, detail: clip(problem, 100) });
+            continue;
+          }
+        }
       }
       // PLAYABILITY GATE (games): if a web game was built, don't accept done until it actually PLAYS — the
       // page must not be broken AND it must respond to REAL input (autoplay). The agent can't pass by just
       // claiming "playable". Push back ONCE; if Chrome can't run the checks, don't block. Games only.
       if (!gameGateDone && tools && typeof tools.autoplay === "function" && tools.workdir) {
         const gameFile = detectGameFile(tools.workdir);
-        if (gameFile) {
+        // PREFER THE SERVED REALITY (Block 62): if the project is a startable server, judge the game as the
+        // user actually RUNS it — over HTTP — even when a static index.html exists. A file:// check of the file
+        // misses server-only behavior (ES modules, fetch, server-served assets) and silently passes. Fall back
+        // to the static file gate only when there's no server (or the server yielded no game).
+        let servedHandled = false;
+        const hasServer = typeof tools._serverStartCommand === "function" && !!tools._serverStartCommand();
+        if (hasServer && typeof tools._verifyServedGame === "function") {
+          // The vision judge runs INSIDE _verifyServedGame while the server is alive; gated on a real key so
+          // offline/selftest runs skip it (identical to the static branch's visionChecklistGame call).
+          const visionCheck = (verifyModel && provider && typeof provider.hasKey === "function" && provider.hasKey())
+            ? async (dataUrl) => {
+                const crit = await visionChecklistGame(provider, verifyModel, task, dataUrl, signal);
+                if (crit && crit.total >= 4 && crit.missing.length) {
+                  trace.push({ step, visionChecklist: { present: crit.present, total: crit.total, missing: crit.missing.slice(0, 8), served: true } });
+                  return `the vision QA checklist (${String(verifyModel).split("/").pop()}) found ${crit.present}/${crit.total} required things present — these are NOT visible in your served render yet:\n${crit.missing.slice(0, 8).map((m) => "  ✗ " + m).join("\n")}\nAdd each so EVERY checklist item is present, then verify again.`;
+                }
+                return null;
+              }
+            : null;
+          let sv = null;
+          try { sv = await tools._verifyServedGame({ task, visionCheck }); } catch { sv = null; }
+          if (sv && sv.ran) {
+            gameGateDone = true; servedHandled = true;
+            if (sv.problem) {
+              noProgress = 0;
+              messages.push({ role: "user", content: `You called done, but the SERVED app isn't finished to the bar: ${sv.problem}\nFix it for real, then restart and RE-VERIFY over the URL (start_server, see_page {url}, http_request), THEN call done.` });
+              trace.push({ step, servedGate: clip(sv.problem, 80) });
+              emit({ type: "gate", gate: "served", ok: false, detail: clip(sv.problem, 100) });
+              continue;
+            }
+          }
+        }
+        if (!servedHandled && gameFile) {
           gameGateDone = true;
           let problem = null;
           try {
-            const sp = tools.see_page ? tools.see_page({ path: gameFile }) : null;
+            const sp = tools.see_page ? await tools.see_page({ path: gameFile }) : null;
             if (sp && sp.broken) problem = `${gameFile} is BROKEN: ${(sp.errors || []).slice(0, 3).join("; ")}`;
             else {
               const ap = tools.autoplay({ path: gameFile, keys: ["ArrowRight", "ArrowUp", "Space"], holdMs: 400 });
@@ -304,7 +474,9 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
                   // the genre's required layers; an egregious skeleton (whole layers empty) is pushed back with
                   // the concrete missing list. Deterministic + offline (no key) — the cheap first channel.
                   try {
-                    const html = fs.readFileSync(path.join(tools.workdir, gameFile), "utf8");
+                    // Bundle index.html + the project's client .js so a split-file game (logic in engine.js/
+                    // game.js) is mapped against the standard, not just its HTML shell (Block 61).
+                    const html = bundleGameSource(fs.readFileSync(path.join(tools.workdir, gameFile), "utf8"), tools.workdir, fs, path);
                     const st = analyzeStructure(html, task);
                     if (!st.pass) {
                       const punch = st.missing.slice(0, 9).map((m) => "  ✗ " + m.label + (m.anti ? " (placeholder / wrong primitive)" : "")).join("\n");
@@ -316,7 +488,7 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
                   // textured GLB) — hand-rolled THREE primitives are not allowed. One-shot push-back.
                   if (!problem) {
                     try {
-                      const html = fs.readFileSync(path.join(tools.workdir, gameFile), "utf8");
+                      const html = bundleGameSource(fs.readFileSync(path.join(tools.workdir, gameFile), "utf8"), tools.workdir, fs, path);
                       const av = assetSourceViolation(html, task);
                       if (av) { problem = av; trace.push({ step, assetGate: clip(av, 80) }); }
                       // ANIMATION (Block 48): a 3D character must animate its parts, not just translate
@@ -357,23 +529,8 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
             noProgress = 0;
             messages.push({ role: "user", content: `You called done, but the GAME isn't finished to the bar: ${problem}\nFix it for real (recognizable characters not boxes, real input + render loop, and it must actually play), verify again with see_page/autoplay/art_review, THEN call done. The DEFAULT is an advanced, complete game — do not declare a boxes/basic prototype done.` });
             trace.push({ step, gameGate: clip(problem, 80) });
+            emit({ type: "gate", gate: "game", ok: false, detail: clip(problem, 100) });
             continue;
-          }
-        } else if (typeof tools._verifyServedGame === "function") {
-          // SERVED GAME (Block 41): no static index.html, but the project may SERVE a game over HTTP (a
-          // Node app). Start it, fetch the entry HTML, and verify it over the URL (broken check + the
-          // production-structure contract). Opt-in by being a startable server → never blocks non-server
-          // projects; the harness-only checks (autoplay/level-cert/WebGL capture) stay file-only for now.
-          let sv = null;
-          try { sv = await tools._verifyServedGame({ task }); } catch { sv = null; }
-          if (sv && sv.ran) {
-            gameGateDone = true;
-            if (sv.problem) {
-              noProgress = 0;
-              messages.push({ role: "user", content: `You called done, but the SERVED app isn't finished to the bar: ${sv.problem}\nFix it for real, then restart and RE-VERIFY over the URL (start_server, see_page {url}, http_request), THEN call done.` });
-              trace.push({ step, servedGate: clip(sv.problem, 80) });
-              continue;
-            }
           }
         }
       }
@@ -385,6 +542,7 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
         try { v = await effectiveVerify({ messages, summary }); }
         catch (e) { v = { ok: false, feedback: `the verification step itself errored: ${e.message}` }; }
         trace.push({ step, tool: "verify", ok: !!v.ok, repair: repairs });
+        emit({ type: "verify", ok: !!v.ok, detail: v.ok ? "passed" : clip(v.feedback || "failed", 120) });
         if (onStep) onStep({ step, tool: "verify", args: {}, result: { ok: !!v.ok, note: v.ok ? "passed" : clip(v.feedback || "failed", 200) } });
         if (v.ok) { verified = true; done = true; trace.push({ step, tool: "done", summary }); if (bridge) bridge.emit("done", { summary, verified: true }); break; }
         verified = false;
@@ -401,6 +559,7 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
       }
       done = true;
       trace.push({ step, tool: "done", summary });
+      emit({ type: "done", summary: clip(summary, 120) });
       if (bridge) bridge.emit("done", { summary });
       break;
     }
@@ -413,6 +572,18 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
       continue;
     }
     noProgress = 0; // a real, known tool call — making progress again
+
+    // PLAN-FIRST gate (Block 73): a SUBSTANTIAL, multi-part task should be DECOMPOSED before building. If the
+    // first mutating action happens with an EMPTY checklist, push back ONCE to lay out a task_write plan —
+    // planning first beats building blind (audit #1). One-shot; trivial/short tasks never trigger.
+    if (!planNudged && MUTATING_TOOLS.has(call.tool) && tools && Array.isArray(tools.tasks) && tools.tasks.length === 0 && isSubstantialTask(task)) {
+      planNudged = true;
+      messages.push({ role: "user", content: `Before you start building: this is a multi-part task — DECOMPOSE it first. Call task_write with a concrete checklist (one step per deliverable), give each mechanically-testable step a 'check' (a shell command that exits 0 when it's truly done), then build to the plan and mark steps completed as you verify them. Planning first prevents stacking work on the wrong foundation.` });
+      trace.push({ step, planNudge: 1 });
+      emit({ type: "gate", gate: "plan", ok: false });
+      continue;
+    }
+
     if (bridge) bridge.emit("turn", { n: turns, tool: call.tool, args: call.args || {} });
 
     // approval/safety gate: let the host veto a tool BEFORE it runs.
@@ -438,6 +609,7 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
     // possibly slow tool, and time how long it takes.
     const reasoning = reasoningProse(resp.text);
     if (onToolStart) { try { onToolStart({ step, tool: call.tool, args: call.args || {}, reasoning }); } catch { /* UI must never break the run */ } }
+    emit({ type: "tool_start", tool: call.tool, turn: turns, reason: clip(reasoning || "", 120) });
     let result; const _t0 = Date.now();
     try { result = await fn(call.args || {}); }
     catch (e) { result = { ok: false, error: e.message }; }
@@ -451,6 +623,27 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
     trace.push({ step, tool: call.tool, ok: result?.ok, tier: result?.tier });
     if (onStep) onStep({ step, tool: call.tool, args: call.args, result, elapsedMs, reasoning });
     if (bridge) bridge.emit("result", { tool: call.tool, ok: result?.ok !== false, note: clip(result?.note || result?.error || "", 300), ms: elapsedMs });
+    emit({ type: "tool_result", tool: call.tool, ok: result?.ok !== false, step: undefined, note: clip(result?.note || result?.error || "", 140), turn: turns, ms: elapsedMs });
+
+    // SCREENSHOT-THRASH guard (Block 59): completing a task = real progress → reset the counter. A visual
+    // check (a screenshot / art_review / compare) with NO task completed since the last one accumulates; past
+    // the cap with work still OPEN, nudge ONCE to stop eyeballing and build the next task to completion.
+    {
+      const completedNow = (tools && Array.isArray(tools.tasks)) ? tools.tasks.filter((t) => t.status === "completed").length : 0;
+      if (completedNow > lastCompletedCount) { lastCompletedCount = completedNow; visualSinceProgress = 0; visualThrashNudged = false; }
+      const isVisualCheck = (call.tool === "see_page" && call.args && call.args.visual) || VISUAL_TOOLS.has(call.tool);
+      const openTasks = (tools && Array.isArray(tools.tasks)) ? tools.tasks.filter((t) => t.status !== "completed") : [];
+      if (isVisualCheck && result && result.ok !== false) {
+        if (++visualSinceProgress >= VISUAL_THRASH_CAP && openTasks.length && !visualThrashNudged) {
+          visualThrashNudged = true;
+          const seen = visualSinceProgress; visualSinceProgress = 0;
+          const next = openTasks[0];
+          messages.push({ role: "user", content: `You've run ${seen} visual checks in a row without completing a task — that's steering by eye, not building. STOP screenshotting after small edits. Build the next unfinished task to COMPLETION now${next ? `: "${next.subject}"` : ""} — write the REAL code (several substantial edits), mark it completed with task_write, and only THEN verify. Work, then watch.` });
+          trace.push({ step, visualThrash: seen });
+          continue;
+        }
+      }
+    }
 
     // MULTIMODAL: when a tool loaded an image/pdf, push a user message whose content is an ARRAY of
     // blocks so the model actually SEES the bytes (provider passes array content through unchanged).
@@ -523,5 +716,13 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
       : "stopped before finishing";
   }
 
-  return { done, summary, turns, editFailures, trace, aborted, error, stopped, verified, repairs, messages, totals: provider.totals() };
+  // SOFT verification this run (Block 75): which in-loop gates actually verified the build — so a game that
+  // passed its gates isn't mis-reported as "unverified" by the supervisor (which re-runs only HARD checks).
+  // These are heuristic/visual gates (weaker than an executable check), so they're surfaced as 'soft', not 'pass'.
+  const verifiedBy = [];
+  if (done) {
+    if (gameGateDone) verifiedBy.push("game-gate");
+    try { const lm = tools && tools.lastVisualMatch; if (lm && lm.perAsset && lm.allPass) verifiedBy.push("visual-match"); } catch { /* */ }
+  }
+  return { done, summary, turns, editFailures, trace, aborted, error, stopped, verified, verifiedBy, repairs, messages, totals: provider.totals() };
 }

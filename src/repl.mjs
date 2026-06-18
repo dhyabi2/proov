@@ -21,6 +21,8 @@ import { runHintLine, detectRunHint, findArtifact, osOpen, launchVerb, isDemonst
 import { freePort, waitForPort } from "./server.mjs";
 import { detectCommands } from "./project.mjs";
 import { resumeSummary, appendJournal } from "./journal.mjs";
+import { detectGameFile } from "./loop.mjs";
+import { suggestNextStep } from "./nextstep.mjs";
 
 // Persist an API key to ~/.proov.json (merging into any existing config). Returns true on success.
 function saveKeyToConfig(key) {
@@ -304,6 +306,11 @@ export async function startRepl({ workdir, config, palette } = {}) {
   // Manual line queue: 'for await (line of rl)' loses buffered piped lines while a turn awaits.
   // We queue lines, process them serially, and pause input during a turn. Works for TTY and pipes.
   const queue = [];
+  // AUTONOMOUS SELF-IMPROVE (Block 79): after a clean done, proov auto-continues to the next improvement
+  // without asking. `autoImproved` remembers which structure gaps were already auto-applied (so an
+  // un-fillable gap can't loop); `autoTasks` marks the auto-queued continuations so a genuine NEW user
+  // request resets the guard.
+  const autoImproved = new Set(), autoTasks = new Set();
   let closed = false, busy = false, exited = false, resolveDone;
   const done = new Promise((r) => { resolveDone = r; });
   const safePrompt = () => { if (!closed && !exited) rl.prompt(); };
@@ -313,6 +320,7 @@ export async function startRepl({ workdir, config, palette } = {}) {
     busy = true;
     while (queue.length && !exited) {
       const input = queue.shift().trim();
+      if (autoTasks.has(input)) autoTasks.delete(input); else autoImproved.clear();   // new user request → reset the loop guard
       if (!input) { safePrompt(); continue; }
 
       const command = parseCommand(input);
@@ -369,15 +377,26 @@ export async function startRepl({ workdir, config, palette } = {}) {
           const rep = await session.runUntilDone(taskToRun, {
             maxRounds, costCap,
             turnOpts: { onStep, onToolStart, onThinking, beforeTool, signal: currentAbort.signal },
-            onRound: ({ round, open, cost, escalateTo }) => {
-              if (escalateTo) process.stdout.write(p.yellow(`  ⤴ stuck — escalating round ${round} to ${escalateTo}\n`));
-              else if (round > 1) process.stdout.write(p.dim(`  ↻ continuing (round ${round}) · ${open} task(s) left · $${(cost || 0).toFixed(4)}\n`));
+            onRound: ({ round, open, cost }) => {
+              if (round > 1) process.stdout.write(p.dim(`  ↻ continuing (round ${round}) · ${open} task(s) left · $${(cost || 0).toFixed(4)}\n`));
             },
           });
           res = rep.last || {};
-          // quiet on a clean single-round finish (a plain question / first-try success); speak up otherwise.
-          if (rep.outcome === "success") { if (explicitFinish || rep.rounds > 1) process.stdout.write(p.green(`✓ finished — all tasks done & verified in ${rep.rounds} round(s) · $${(rep.cost || 0).toFixed(4)}\n`)); }
-          else process.stdout.write(p.yellow(`∅ stopped after ${rep.rounds} round(s) — ${rep.outcome}${rep.detail ? `: ${rep.detail}` : ""}.${rep.openTasks.length ? ` ${rep.openTasks.length} left: ${rep.openTasks.slice(0, 5).join("; ")}` : ""}\n`));
+          // HONEST verification verdict (Block 70): say 'verified' ONLY when a real check confirmed it; an
+          // accepted-but-unchecked done reads as ⚠ UNVERIFIED, and a failing check reads ✗ — never silent.
+          const v = rep.verification || {};
+          const vran = (v.ran || []).join(", ");
+          const vmsg = rep.verifiedStatus === "fail"
+            ? p.red(`checks FAILED ✗ — ${(v.failures || []).slice(0, 3).join("; ") || vran}`)
+            : p.green(`verified ✓${vran ? ` (${vran})` : ""}`);
+          // quiet on a clean single-round verified finish; speak up on anything else.
+          if (rep.outcome === "success" && rep.verifiedStatus === "pass") {
+            if (explicitFinish || rep.rounds > 1) process.stdout.write(p.green(`✓ finished — all tasks done in ${rep.rounds} round(s) · $${(rep.cost || 0).toFixed(4)} · `) + vmsg + "\n");
+          } else if (rep.outcome === "success") {
+            process.stdout.write(p.yellow(`⚠ finished in ${rep.rounds} round(s) · $${(rep.cost || 0).toFixed(4)} · `) + vmsg + "\n");
+          } else {
+            process.stdout.write(p.yellow(`∅ stopped after ${rep.rounds} round(s) — ${rep.outcome}${rep.detail ? `: ${rep.detail}` : ""} · `) + vmsg + (rep.openTasks.length ? p.yellow(` · ${rep.openTasks.length} left: ${rep.openTasks.slice(0, 5).join("; ")}`) : "") + "\n");
+          }
         } else {
           res = await session.runTurn(taskToRun, { onStep, onToolStart, onThinking, beforeTool, signal: currentAbort.signal });
         }
@@ -408,38 +427,33 @@ export async function startRepl({ workdir, config, palette } = {}) {
         // last inner turn's stop reason; just carry the footer status.
         if (res.stopped) { if (!untilDone) process.stdout.write(p.yellow(`\n∅ ${res.stopped}\n`)); footerStatus = "incomplete"; }
         else if (!res.summary) process.stdout.write(p.dim("\n(done — no summary)\n"));
-        // Anticipate intent (Blocks 9 & 10): if the turn built a runnable artifact, show how to run it
-        // AND offer to actually demonstrate it (open the browser / run it), so "show me" really shows.
+        // Show HOW to run the built artifact (informational only). The interactive "run it now?" / open-the-
+        // browser step was REMOVED (Block 79) — proov doesn't interrupt the autonomous loop to open a browser.
         if (createdThisTurn.length) {
           const hint = detectRunHint(workdir, createdThisTurn);
-          if (hint) {
-            process.stdout.write("\n" + p.cyan(`▶ run ${hint.what} with:  ${hint.cmd}`) + "\n");
-            // Only OFFER to open it when the work is COMPLETELY done: the turn finished cleanly (done,
-            // not stopped) AND — for a web page — it actually WORKS (no JS/console errors, not blank).
-            // Otherwise just show the command; never ask to open an unfinished or broken page.
-            let okToOpen = process.stdin.isTTY && res.done && !res.stopped;
-            // not "completely done" if the agent's OWN task checklist still has incomplete items.
-            const openTasks = (session.tools.tasks || []).filter((t) => t.status !== "completed");
-            if (okToOpen && openTasks.length) {
-              okToOpen = false;
-              process.stdout.write(p.yellow(`  ⚠ not opening — ${openTasks.length} task${openTasks.length === 1 ? "" : "s"} still incomplete (the work isn't finished):\n`) + openTasks.slice(0, 4).map((t) => p.dim("    ☐ " + t.subject)).join("\n") + "\n" + p.dim("    ask me to finish, then it'll offer to open.\n"));
-            }
-            if (okToOpen && hint.kind === "open" && /\.html?$/i.test(hint.target || "")) {
-              try {
-                const chk = session.tools.see_page({ path: hint.target });
-                if (chk && chk.broken) {
-                  okToOpen = false;
-                  process.stdout.write(p.yellow(`  ⚠ not opening — ${hint.target} has errors (it won't display right):\n`) + (chk.errors || []).slice(0, 4).map((e) => p.dim("    - " + e)).join("\n") + "\n" + p.dim("    fix these, then it'll offer to open.\n"));
-                }
-              } catch { /* if the check itself fails, fall back to offering */ }
-            }
-            if (okToOpen) await demonstrate(hint);
-            else if (res.stopped) process.stdout.write(p.dim("  (the turn stopped before finishing — the page is likely incomplete; fix the errors above first)\n"));
-          }
+          if (hint) process.stdout.write("\n" + p.cyan(`▶ run ${hint.what} with:  ${hint.cmd}`) + "\n");
         }
       }
       if (session.tools.tasks.length) process.stdout.write("\n" + renderTasks(session.tools.tasks, p) + "\n");
       process.stdout.write(footer({ turns: res.turns, totalTokens: res.totals.totalTokens, cachedTokens: res.totals.cachedTokens, cost: res.totals.cost, model: session.provider.model, status: footerStatus }, p) + "\n\n");
+
+      // AUTONOMOUS SELF-IMPROVE (Block 79): on a clean done with no open tasks, AUTOMATICALLY continue to the
+      // single most valuable next improvement — grounded in a REAL structure gap in THIS build — WITHOUT asking
+      // (no y/N). The suggestion EXPANDS into a fresh task_write checklist the agent implements + verifies.
+      // Bounded: the same gap is never auto-applied twice (an un-fillable gap can't loop), and it goes quiet
+      // when there's nothing worth doing or the run didn't finish cleanly.
+      if (res.done && !res.stopped && !(session.tools.tasks || []).some((t) => t.status !== "completed")) {
+        try {
+          const gameFile = detectGameFile(workdir);
+          const next = gameFile ? suggestNextStep(workdir, taskToRun, { fsMod: fs, pathMod: path, gameFile }) : null;
+          if (next && !autoImproved.has(next.id)) {
+            autoImproved.add(next.id);
+            process.stdout.write(p.cyan("◇ auto-continuing → ") + next.offer + p.dim(`  (${next.reason})`) + "\n");
+            autoTasks.add(next.task);
+            queue.unshift(next.task);   // applied automatically — no prompt
+          }
+        } catch { /* a suggestion must never break the REPL */ }
+      }
       safePrompt();
     }
     busy = false;

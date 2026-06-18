@@ -45,6 +45,53 @@ export function continuationFor(res, open, forceful) {
   return `${why}${push}Keep going and finish the task.${openList}${tail}`;
 }
 
+// FINAL VERIFICATION (Block 70): run the DETERMINISTIC, re-runnable checks (per-task acceptance checks +
+// project typecheck/lint/build/test) on whatever exists at exit — so EVERY outcome (success or stop) carries
+// an honest verdict, not a silent stop, and "done" never reads as "verified" unless a real check passed.
+// Returns { status:'pass'|'fail'|'none', ran:[], failures:[], skipped:[] }.
+async function finalVerify(session, res) {
+  const t = session && session.tools;
+  if (!t) return { status: "none", ran: [], failures: [], skipped: [] };
+  const ran = [], failures = [], skipped = [];
+  try {
+    if (typeof t._verifyTaskChecks === "function") {
+      const tc = t._verifyTaskChecks();
+      if (tc) { ran.push("task-checks"); for (const f of tc.failures || []) failures.push(`task "${f.subject}": ${f.reason}`); }
+    }
+    if (res && res.verified === true) {
+      ran.push("project-checks");   // the in-loop verify already ran them CLEAN this round → don't re-run (one check/round)
+    } else if (typeof t._hasProjectChecks === "function" && t._hasProjectChecks() && typeof t._verifyProjectChecks === "function") {
+      const pc = await t._verifyProjectChecks({});
+      if (pc && pc.ran) {
+        ran.push("project-checks");
+        // KEEP THE REAL OUTPUT (Block 78): the assertion / error text is the "detailed feedback" remediation
+        // needs — not just the check name. (Skips are the toolchain genuinely being absent.)
+        for (const f of pc.failures || []) failures.push(`${f.check} FAILED:\n${(f.output || "").split("\n").filter(Boolean).slice(-6).join("\n")}`.slice(0, 600));
+        for (const s of pc.skipped || []) skipped.push(`${s.check} (${s.why})`);
+      }
+    }
+  } catch (e) {
+    // FAIL CLOSED (Block 78): an error INSIDE the verifier is a verification FAILURE, never a silent pass.
+    return { status: "fail", ran: ["verifier"], failures: [`the verifier itself errored: ${String(e && e.message || e).slice(0, 200)}`], skipped: [] };
+  }
+  const status = !ran.length ? "none" : (failures.length ? "fail" : "pass");
+  return { status, ran, failures, skipped };
+}
+
+// REMEDIATION continuation (Block 77): on a verification FAILURE, don't escalate the model — give the SAME
+// model the detailed failures and have it GENERATE A FRESH CHECKLIST of fixes (each with a runnable check) for
+// the next iteration. This is the "new workflow + improvements" the failed final-verify should produce.
+export function remediationContinuation(fv, open = []) {
+  const fails = (fv.failures || []).slice(0, 10).map((f, i) => `  ${i + 1}. ${f}`).join("\n") || "  (the project's checks did not pass)";
+  const openList = open.length ? `\nStill-open tasks: ${open.slice(0, 6).map((t) => t.subject).join("; ")}` : "";
+  return `VERIFICATION FAILED — the build does NOT pass its checks yet:\n${fails}${openList}\n\nFor the NEXT iteration, GENERATE A NEW PLAN to fix exactly these (no shortcuts, no skipping checks): call task_write with a FRESH checklist where each item fixes ONE failure above and carries a 'check' (a command that exits 0 only when that fix is verified). Then implement each fix and re-run the checks. Do NOT call done until EVERY check passes.`;
+}
+
+// When the agent built code but NOTHING verifies it (Block 78): don't accept done — make it ADD verification.
+export function noVerificationContinuation() {
+  return `You built code, but NOTHING verifies it — there is no passing test or check that proves it works. Do NOT call done yet. Add REAL verification: write a test in the project's test suite (or add a task_write item with a runnable 'check' — a command that exits 0 only when the behavior is correct), run it, and make it pass. Only call done once a check actually CONFIRMS the result.`;
+}
+
 function report(outcome, rounds, res, open, totals, detail) {
   return {
     outcome,                                   // 'success' | 'budget' | 'dead_end' | 'aborted' | 'error'
@@ -66,49 +113,88 @@ function report(outcome, rounds, res, open, totals, detail) {
 // normal stop). opts: { maxRounds, costCap, noProgressStop, turnOpts, onRound }.
 export async function runUntilDone(session, task, opts = {}) {
   const maxRounds = opts.maxRounds ?? 12;
-  const costCap = opts.costCap ?? Infinity;
+  // 0 (or any non-positive) means NO cap — matches the REPL's untilDoneCostCap semantics. A bare
+  // `?? Infinity` is wrong here because `0 ?? Infinity === 0`, which would stop after the first round
+  // (any cost >= $0). Only a positive number is treated as a real ceiling.
+  const costCap = opts.costCap > 0 ? opts.costCap : Infinity;
   const noProgressStop = opts.noProgressStop ?? 3;
   const turnOpts = opts.turnOpts || {};
   const onRound = typeof opts.onRound === "function" ? opts.onRound : () => {};
-  const strongModel = opts.strongModel || "";   // used ONLY on a stuck round (the ~1% critical case)
+  // (model escalation removed — Block 77: a failed verification REMEDIATES on the same model, never a bigger one)
+  const emit = typeof opts.emit === "function" ? opts.emit : () => {};   // workflow events for a monitor (Block 76)
+  emit({ type: "run_start", task: String(task).slice(0, 160) });
 
   const openOf = () => (session.tools && Array.isArray(session.tools.tasks)) ? session.tools.tasks.filter((t) => t.status !== "completed") : [];
   const doneCountOf = () => (session.tools && Array.isArray(session.tools.tasks)) ? session.tools.tasks.filter((t) => t.status === "completed").length : 0;
   const totalsOf = () => (typeof session.totals === "function" ? session.totals() : { cost: 0 });
-  const finished = (r) => !!(r && r.done) && r.verified !== false && openOf().length === 0;
+  // What got BUILT this run — any successful mutating tool. A run that built nothing (a question / a read)
+  // needs no verification; a run that built code MUST be verified before it can SUCCEED (Block 78).
+  const MUTATING = new Set(["edit_file", "edit_files", "edit_symbol", "create_file", "write_file"]);
+  const mutatedIn = (r) => Array.isArray(r && r.trace) && r.trace.some((x) => MUTATING.has(x.tool) && x.ok !== false);
+  // Run the deterministic verifier ONCE per done-round, fail-CLOSED (an internal error is a failure, not a pass).
+  const safeVerify = async (r) => { try { return await finalVerify(session, r); } catch (e) { return { status: "fail", ran: ["verifier"], failures: [`the verifier errored: ${String(e && e.message || e).slice(0, 160)}`], skipped: [] }; } };
+  // Is the build VERIFIED? A hard check passed, OR a soft in-loop gate (game/visual) passed, OR there was
+  // nothing to verify (no build). A hard FAIL — or a build with NO passing verification — is NOT verified.
+  const verifiedOk = (r, lv, built) => {
+    if (r && r.verified === false) return false;
+    if (lv && lv.status === "fail") return false;
+    if (lv && lv.status === "pass") return true;
+    if (Array.isArray(r && r.verifiedBy) && r.verifiedBy.length) return true;
+    return !built;   // nothing built → nothing to verify; built-but-unverified → keep iterating
+  };
+  const finished = (r, lv, built) => !!(r && r.done) && openOf().length === 0 && verifiedOk(r, lv, built);
+
+  // Final report. Uses the PER-ROUND verification result (no redundant re-check at exit — Block 78). Status is
+  // binary: a run only SUCCEEDS when verified, so 'pass' iff outcome==='success'; any other exit is 'fail'.
+  const finish = (outcome, rounds, res, open, totals, detail, lastVerify) => {
+    const rep = report(outcome, rounds, res, open, totals, detail);
+    rep.verification = (outcome === "aborted" || outcome === "error") ? null : (lastVerify || null);
+    rep.verifiedStatus = outcome === "success" ? "pass" : "fail";
+    if (rep.verifiedStatus === "fail") rep.verified = false;
+    emit({ type: outcome === "success" ? "done" : "stop", outcome, status: rep.verifiedStatus, rounds, detail: detail || null });
+    return rep;
+  };
 
   let res = await session.runTurn(task, turnOpts);
   let rounds = 1, noProgress = 0, bestDone = doneCountOf(), lastFp = stopFingerprint(res);
+  let everBuilt = mutatedIn(res);
+  let lastVerify = (res.done && !res.aborted && !res.error) ? await safeVerify(res) : null;
 
   while (true) {
     const open = openOf();
     const totals = totalsOf();
     onRound({ round: rounds, res, open: open.length, cost: totals.cost, noProgress });
+    emit({ type: "round", n: rounds, open: open.length, cost: totals.cost });
 
-    if (res.aborted) return report("aborted", rounds, res, open, totals);
-    if (res.error) return report("error", rounds, res, open, totals, res.error);
-    if (finished(res)) return report("success", rounds, res, open, totals);
-    if (rounds >= maxRounds) return report("budget", rounds, res, open, totals, `reached the ${maxRounds}-round cap with work remaining`);
-    if (totals.cost >= costCap) return report("budget", rounds, res, open, totals, `reached the $${costCap} cost cap with work remaining`);
+    if (res.aborted) return finish("aborted", rounds, res, open, totals, null, lastVerify);
+    if (res.error) return finish("error", rounds, res, open, totals, res.error, lastVerify);
+    if (finished(res, lastVerify, everBuilt)) return finish("success", rounds, res, open, totals, null, lastVerify);
+    if (rounds >= maxRounds) return finish("budget", rounds, res, open, totals, `reached the ${maxRounds}-round cap, still not verified`, lastVerify);
+    if (totals.cost >= costCap) return finish("budget", rounds, res, open, totals, `reached the $${costCap} cost cap, still not verified`, lastVerify);
 
     // NO-FORWARD-PROGRESS: the checklist didn't advance AND the turn ended the same way as last round.
     const fp = stopFingerprint(res), advanced = doneCountOf() > bestDone;
     if (!advanced && fp === lastFp) noProgress++; else noProgress = 0;
-    if (noProgress >= noProgressStop) return report("dead_end", rounds, res, open, totals, `no forward progress for ${noProgress} rounds (stuck: ${fp})`);
+    if (noProgress >= noProgressStop) return finish("dead_end", rounds, res, open, totals, `no forward progress for ${noProgress} rounds (stuck: ${fp})`, lastVerify);
     bestDone = Math.max(bestDone, doneCountOf());
     lastFp = fp;
 
-    // CRITICAL-ONLY ESCALATION: when the cheap default model is STUCK (no-progress ticking, or it just hit
-    // a fail/spin), run ONE round on the strong model to break through, then revert. This is the ~1% of
-    // turns where the expensive model earns its cost; the rest stay on the cheap default.
-    const stuck = noProgress > 0 || !!stuckMarker(res);
-    let prevModel = null;
-    if (stuck && strongModel && session.provider && session.provider.model && session.provider.model !== strongModel) {
-      prevModel = session.provider.model; session.provider.model = strongModel;
-      onRound({ round: rounds, escalateTo: strongModel });
+    // ITERATE UNTIL VERIFIED (Block 78) — always, on the SAME model. Choose the continuation from WHY it isn't
+    // verified: a hard check FAILED → feed the detailed failures and ask for a new checklist of fixes; built
+    // but NOTHING verifies it → ask for a real test/check; otherwise the normal targeted continuation. The
+    // per-round verification (lastVerify) is reused — we do NOT check again here.
+    let cont;
+    if (res.done && lastVerify && lastVerify.status === "fail") {
+      emit({ type: "gate", gate: "project", ok: false, detail: (lastVerify.failures || []).slice(0, 2).join(" | ").slice(0, 160) });
+      cont = remediationContinuation(lastVerify, open);
+    } else if (res.done && open.length === 0 && everBuilt && !verifiedOk(res, lastVerify, everBuilt)) {
+      cont = noVerificationContinuation();
+    } else {
+      cont = continuationFor(res, open, noProgress > 0);
     }
-    try { res = await session.runTurn(continuationFor(res, open, noProgress > 0), turnOpts); }
-    finally { if (prevModel) session.provider.model = prevModel; }
+    res = await session.runTurn(cont, turnOpts);
+    everBuilt = everBuilt || mutatedIn(res);
+    lastVerify = (res.done && !res.aborted && !res.error) ? await safeVerify(res) : null;
     rounds++;
   }
 }

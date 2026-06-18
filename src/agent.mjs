@@ -9,6 +9,7 @@ import path from "node:path";
 import { Provider } from "./provider.mjs";
 import { Tools } from "./tools.mjs";
 import { runLoop } from "./loop.mjs";
+import { makeEmitter } from "./events.mjs";
 import { runUntilDone } from "./supervisor.mjs";
 import { connectAll, closeAll, mcpPromptSection } from "./mcp.mjs";
 import { detectStyle, styleBrief } from "./style.mjs";
@@ -40,8 +41,9 @@ wastes the turn). The JSON object looks like:
   {"tool":"web_fetch","args":{"url":"https://..."}}
   {"tool":"view_image","args":{"path":"shot.png"}}
   {"tool":"view_pdf","args":{"path":"spec.pdf"}}
-  {"tool":"see_page","args":{"path":"index.html"}}
+  {"tool":"see_page","args":{"path":"index.html","visual":true,"goal":"a platformer: hero with a hat, 2 enemy types, coins, a score HUD, themed background"}}
   {"tool":"see_asset","args":{"svg":"<svg ...>...</svg>"}}
+  {"tool":"generate_image","args":{"prompt":"a polished 2D platformer scene: a mustachioed hero, 2 enemy types, coins, a HUD, themed parallax background","out":"reference.png"}}
   {"tool":"play_game","args":{"path":"index.html","inputs":[{"at":0,"key":"ArrowRight","down":true}],"steps":120}}
   {"tool":"play_levels","args":{"path":"index.html","steps":80}}
   {"tool":"autoplay","args":{"path":"index.html","keys":["ArrowRight","ArrowUp","Space"]}}
@@ -136,6 +138,12 @@ TASK MANAGEMENT (task_write): for any multi-step task, call "task_write" up fron
   steps as a checklist, then update it as you go. status ∈ pending|in_progress|completed. Keep
   EXACTLY ONE task in_progress at a time; mark a task completed right after you finish it. This
   drives the live checklist the user sees.
+  ACCEPTANCE CHECKS (recommended): give a task an executable 'check' — a shell command that exits 0 ONLY
+  when the task is genuinely done (e.g. {"subject":"add the sum util","check":"npm test -- sum"} or a node
+  -e assertion that process.exit(1)s on failure). When you mark that task completed, proov RUNS the check; if
+  it FAILS the task stays in_progress and you must fix it — and done is BLOCKED while any task's check fails.
+  Ground-truth verification per step: never stack work on an unmet criterion. Prefer a runnable check over a
+  vague subject; leave 'check' off for steps that aren't mechanically testable.
 
 CODE NAVIGATION: to find WHERE something is defined, prefer find_symbol (jumps straight to the
   definition's file:line + signature) over grep (which returns every mention). Use find_refs to find
@@ -173,6 +181,13 @@ UNDERSTAND INTENT (do this FIRST): a request is usually underspecified. Infer wh
   something runnable, did you run it and confirm it actually works? Your done summary MUST tell the user
   how to SEE / RUN / VERIFY the result.
 
+LEAVE DURABLE TESTS (not just one-off checks): for real code work (a function, module, API, fix), WRITE a
+  test the user KEEPS — add to / create the project's test suite (e.g. a *.test.* file or the framework in use)
+  that pins the behavior you built or the bug you fixed, and make it pass. Proov's gates are ephemeral
+  verification for THIS run; a committed test is durable verification the user owns and CI can run. Prefer a
+  real test in the repo over a throwaway check_behavior whenever the project has (or could have) a test runner.
+  For a bug fix, add the regression test that FAILS before your fix and passes after.
+
 PROVE IT WORKS — RUN THE PROJECT'S OWN CHECKS: for ANY project that has its own verification (a test script,
   typecheck, lint, or build — detected from package.json / pyproject.toml / go.mod / Cargo.toml / pom.xml /
   Makefile / etc.), the done-gate RUNS THEM and will NOT accept done until they pass. So after you change
@@ -190,12 +205,40 @@ PROVE IT WORKS — RUN THE PROJECT'S OWN CHECKS: for ANY project that has its ow
   free checks (no writes/network); prefer EXTENDING a real test if the project has one. It's a proof tool, not
   a substitute for the project's own tests.
 
-VISUAL CHECK (web pages — use your EYE): after you build or change an HTML page, call see_page {path}
-  to READ how it ACTUALLY renders (the post-JS visible text). Look for render bugs — a literal "\n"
-  shown on screen instead of a line break, a BLANK page, wrong/missing/garbled text — then FIX them and
-  see_page again until it reads correctly. For layout/visual issues (overlap, broken styling) call
-  see_page {path, visual:true} to get a screenshot you can look at. Do NOT claim a page works without
-  looking at it with see_page.
+BUILD FIRST, THEN VERIFY — do NOT screenshot after every edit: verification is for confirming a COMPLETE
+  chunk of work, not for steering one-line edits. The failure mode to avoid is edit→see_page→edit→see_page:
+  tiny edits each followed by a screenshot, burning turns while the real work (the level manager, enemies,
+  the HUD, levels) never gets built. Instead: IMPLEMENT a whole feature / finish a whole task — write the
+  real code, several substantial edits in a row — and only THEN call see_page once to check that finished
+  chunk. A see_page (visual) costs ~3s + vision tokens; it is a checkpoint between features, not a feedback
+  loop for single lines. If you've called see_page twice in a row with only a line or two changed between,
+  STOP looking and go build the next unfinished task on your checklist to completion. Work, then watch.
+
+DESIGN FIRST — DRAW THE TARGET, THEN BUILD TO MATCH IT: for a VISUAL build (a game, a UI, anything where
+  look matters) and you have NO reference image yet, your FIRST step is generate_image {prompt:"<a vivid
+  description of the finished design>", out:"reference.png"} to produce a reference MOCKUP. Then build the
+  real thing to MATCH that mockup, and verify per-asset with compare_regions {target:"reference.png",
+  render:"<your page>"} — every asset ≥95% AND the whole scene ≥95%. ENFORCED: once reference.png exists, the
+  done-gate won't let you finish until the render matches it per-asset.
+  CRITICAL — THE IMAGE IS A ~1% SAMPLE, NOT THE GAME: the reference is ONE screenshot of ONE moment — a
+  STYLE + quality sample, roughly 1% of the finished product. It is NOT the whole deliverable. You must
+  EXPLORE and build everything OUTSIDE the frame — the full workflow: all levels/areas, a start/menu screen,
+  win + lose states, the whole game loop and mechanics — in the SAME style as the sample. Matching the
+  screenshot is necessary but NOT sufficient: the done-gate ALSO rejects a single-screen reproduction that
+  has no levels/states beyond the pictured scene. Build the complete game the sample is a window into.
+  (Skip the generate step only if the user supplied their own reference, or asked for a non-visual/text-only
+  deliverable — but the "build beyond the frame" rule still applies to any reference.)
+
+VISUAL CHECK (web pages — use your EYE): when you've FINISHED building or substantially changing a page,
+  call see_page {path} to READ how it ACTUALLY renders (the post-JS visible text). Look for render bugs — a
+  literal "\n" shown on screen instead of a line break, a BLANK page, wrong/missing/garbled text — then FIX
+  them and see_page again until it reads correctly. For layout/visual issues (overlap, broken styling) call
+  see_page {path, visual:true} to get a screenshot. ALWAYS pass a goal: see_page {path, visual:true,
+  goal:"<what this screen SHOULD show — the elements/layout/style you expect>"} — proov then has a vision
+  model report, in detail, WHAT IS ACTUALLY VISIBLE and whether it MATCHES your goal (with a MISSING/WRONG
+  list). That is the verification; a screenshot with no goal only shows, it doesn't check. Fix the listed
+  gaps and see_page again until MATCH: YES. Do NOT claim a page works without looking at it with see_page —
+  but look when the work is DONE, not after each keystroke.
   CRITICAL: see_page now also runs a JS SYNTAX check (node --check on every inline script and local .js)
   AND captures runtime CONSOLE errors. A JavaScript error (e.g. "Unexpected token 'else' / '}'") leaves
   the page structurally present but BLANK — it LOOKS fine in the DOM yet nothing runs. If see_page returns
@@ -283,6 +326,10 @@ WEB DEFAULT — A NODE APP ON A URL (not a lone static file): for ANY web work �
   - RUN + VERIFY over the URL (this is how you know it works): (1) start_server {command:"node server.js"} →
     {url, port}; (2) http_request {url:"<url>/api/..."} for API routes; (3) see_page {url:"<url>"} (visual:true
     too) for the page; (4) fix + re-verify, then stop_server {} when done checking.
+  - A SERVED GAME is driven over the URL too: play_game {url:"<url>"}, play_levels {url:"<url>"}, and
+    autoplay {url:"<url>", keys:[...]} ALL accept a 'url' (not just a file 'path'). Use the URL the server
+    returned. NOTE: if a drive tool returns FILE_NOT_FOUND/NO_PATH, you passed a URL where a file path was
+    expected (or vice-versa) — fix the ARGUMENT (use {url:...}); do NOT start editing server.js over it.
   - REPORT the http://localhost:PORT url in your final summary so the user can open it. NOT done until
     start_server succeeded AND http_request/see_page show it actually serves.
   - A minimal zero-dependency static+routes server (server.js) to start from:
@@ -399,7 +446,7 @@ MATCH A REFERENCE PICTURE (when the user gives a target image to recreate — a 
      returns a similarity score 0–100, the worst-matching REGIONS (top-left, middle, …), and a composite
      image — target | yours | heatmap (red = mismatch) — that you LOOK at.
   3. REFINE the worst regions (wrong colour/position/missing element), then compare_image AGAIN. Keep
-     looping until similarity is high (aim ≥90). Do NOT declare a visual match done on a low score; if the
+     looping until similarity is high (aim ≥95). Do NOT declare a visual match done on a low score; if the
      score stops improving across iterations, change approach (re-examine the target) rather than giving up.
 
   BUSY PICTURES WITH MANY ASSETS (a city, a UI, a crowded scene): a WHOLE-image score is too coarse — one
@@ -411,9 +458,12 @@ MATCH A REFERENCE PICTURE (when the user gives a target image to recreate — a 
   - Verify the whole job with compare_regions {target, render, regions:[…all the boxes…]}: it scores EACH
     asset region at high sensitivity AND the whole scene, returns a worst-first scorecard + an annotated
     composite (green box = match, red = off), and tells you which assets still fail. Chase the per-asset
-    REDS — fix those exact assets/positions, re-run compare_regions, and only finish when EVERY asset ≥90
-    AND the whole scene ≥90 (allPass). Fix layout/position first, then per-asset detail; don't redo assets
+    REDS — fix those exact assets/positions, re-run compare_regions, and only finish when EVERY asset ≥95
+    AND the whole scene ≥95 (allPass). Fix layout/position first, then per-asset detail; don't redo assets
     already green. This is how you faithfully reproduce a 75-asset picture instead of an averaged blur.
+    ENFORCED: if a reference image (reference/mockup/design.*) is present, the done-gate will NOT let you
+    finish until compare_regions shows EVERY asset ≥95% AND the whole scene ≥95% — verify per-asset, not just
+    a whole-scene compare_image (which averages a wrong asset out).
 
   THE PICTURE IS A BASELINE, NOT THE WHOLE GAME (extrapolate beyond the frame): a reference picture is one
   window into a much bigger world. The real game needs content the frame never shows — off-screen areas,
@@ -495,7 +545,7 @@ the checklist updated → call done. Keep going until the task is verifiably com
 export function makeAgent(workdir, opts = {}) {
   const provider = new Provider(opts);
   // fold web_search's separate OpenRouter spend into this provider's session accounting.
-  const tools = new Tools(workdir, { ...opts, onExternalUsage: (u) => provider.recordExternalUsage(u) });
+  const tools = new Tools(workdir, { ...opts, provider, onExternalUsage: (u) => provider.recordExternalUsage(u) });
   const toolMap = {
     read_file: (a) => tools.read_file(a),
     list_dir: (a) => tools.list_dir(a),
@@ -542,6 +592,7 @@ export function makeAgent(workdir, opts = {}) {
     style_profile: (a) => tools.style_profile(a),
     style_check: (a) => tools.style_check(a),
     art_review: (a) => tools.art_review(a),
+    generate_image: (a) => tools.generate_image(a),
     artkit: (a) => tools.artkit(a),
     orbit_scene: (a) => tools.orbit_scene(a),
     world_map: (a) => tools.world_map(a),
@@ -574,7 +625,7 @@ const SUBAGENT_BRIEF =
 // READ/INFORMATIONAL tools (not edits/commits), de-noised and length-capped.
 const FINDING_TOOLS = new Set([
   "read_file", "list_dir", "grep", "glob", "repo_map", "project_info", "house_style", "find_symbol", "find_refs", "run_command", "web_search",
-  "web_fetch", "view_pdf", "view_image", "see_page", "see_asset", "play_game", "play_levels", "autoplay", "compare_image", "compare_regions", "crop_image", "style_profile", "style_check", "art_review", "artkit", "orbit_scene", "world_map", "resume", "blueprint_status", "blueprint_audit", "git_status", "git_diff", "git_log",
+  "web_fetch", "view_pdf", "view_image", "see_page", "see_asset", "play_game", "play_levels", "autoplay", "compare_image", "compare_regions", "crop_image", "generate_image", "style_profile", "style_check", "art_review", "artkit", "orbit_scene", "world_map", "resume", "blueprint_status", "blueprint_audit", "git_status", "git_diff", "git_log",
 ]);
 export function extractFindings(sub, maxTotal = 2000) {
   const out = [];
@@ -724,6 +775,7 @@ export async function runAgent(task, workdir, opts = {}) {
     provider, tools, toolMap, systemPrompt: SYSTEM + styleSuffix(workdir), task,
     maxSteps: opts.maxSteps ?? Infinity, onStep: opts.onStep,
     verify: opts.verify, maxRepairs: opts.maxRepairs,
+    designFirst: opts.designFirst,
   });
 }
 
@@ -735,7 +787,10 @@ export class Session {
     this.opts = opts;
     this.provider = new Provider(opts);
     // fold web_search's separate OpenRouter spend into the session provider's accounting.
-    this.tools = new Tools(workdir, { ...opts, onExternalUsage: (u) => this.provider.recordExternalUsage(u) });
+    this.tools = new Tools(workdir, { ...opts, provider: this.provider, onExternalUsage: (u) => this.provider.recordExternalUsage(u) });
+    // Workflow event emitter (Block 76): emits BPMN-step-tagged events to a sink for a real-time monitor.
+    this.emitter = makeEmitter({ eventsUrl: opts.eventsUrl, eventsFile: opts.eventsFile, runId: opts.runId });
+    if (this.emitter.enabled) this.emitter.emit({ type: "session", workdir: this.workdir, model: this.provider.model });
     this.messages = null; // seeded on first run; persists across turns
     this.maxSteps = opts.maxSteps ?? Infinity;
     this.editModel = opts.editModel || "";   // optional 2nd model for editing/bug-fixing (creator = model)
@@ -865,6 +920,7 @@ export class Session {
       style_profile: (a) => t.style_profile(a),
       style_check: (a) => t.style_check(a),
       art_review: (a) => t.art_review(a),
+      generate_image: (a) => t.generate_image(a),
       artkit: (a) => t.artkit(a),
       orbit_scene: (a) => t.orbit_scene(a),
       world_map: (a) => t.world_map(a),
@@ -893,7 +949,7 @@ export class Session {
   // Drive this session to GENUINE completion (Block 46): keep continuing the SAME thread — with a targeted
   // continuation each round, not a bare "continue" — until every checklist task is done and the turn wasn't
   // pushed back, or a budget/no-progress stop. Returns a structured final report. See supervisor.mjs.
-  async runUntilDone(task, opts = {}) { return runUntilDone(this, task, { strongModel: this.strongModel, ...opts }); }
+  async runUntilDone(task, opts = {}) { return runUntilDone(this, task, { strongModel: this.strongModel, emit: this.emitter.emit, ...opts }); }
 
   // Run ONE user turn against the persistent thread. opts: { onStep, beforeStep, signal, verify }.
   async runTurn(task, { onStep, onToolStart, onThinking, beforeTool, signal, verify, maxRepairs, bridge } = {}) {
@@ -916,6 +972,8 @@ export class Session {
       verify,
       maxRepairs,
       bridge,
+      designFirst: this.opts.designFirst,
+      emit: this.emitter.emit,
     });
     this.messages = res.messages; // persist the thread for the next turn
     return res;

@@ -113,7 +113,7 @@ console.log("== 4. config resolution / merge precedence ==");
 {
   // defaults only
   const d = resolveConfig({});
-  ok("defaults applied", d.config.model === DEFAULTS.model && d.config.approval === "edits");
+  ok("defaults applied", d.config.model === DEFAULTS.model && d.config.approval === "auto");
 
   // precedence: flags > local > home > env > defaults
   const r = resolveConfig({
@@ -130,7 +130,7 @@ console.log("== 4. config resolution / merge precedence ==");
 
   // sanitization: junk + bad approval dropped, empty string ignored
   const s = resolveConfig({ local: { approval: "bogus", maxSteps: -3, model: "", junk: 1 } });
-  ok("bad approval rejected -> default", s.config.approval === "edits");
+  ok("bad approval rejected -> default", s.config.approval === "auto");
   ok("bad maxSteps rejected -> default", s.config.maxSteps === DEFAULTS.maxSteps);
   ok("empty model ignored -> default", s.config.model === DEFAULTS.model);
   ok("unknown key dropped", s.config.junk === undefined);
@@ -1231,13 +1231,13 @@ console.log("== 31. see_page — the agent's eye (Block 11) ==");
 
   // tool wiring + graceful errors (no real browser needed)
   const t = new Tools(tmp);
-  ok("see_page: requires a path", t.see_page({}).ok === false);
-  ok("see_page: missing file → FILE_NOT_FOUND", t.see_page({ path: "nope.html" }).error === "FILE_NOT_FOUND");
+  ok("see_page: requires a path", (await t.see_page({})).ok === false);
+  ok("see_page: missing file → FILE_NOT_FOUND", (await t.see_page({ path: "nope.html" })).error === "FILE_NOT_FOUND");
 
   // REAL render — only if a headless browser is installed (skipped cleanly otherwise).
   if (findBrowser()) {
     fs.writeFileSync(path.join(tmp, "buggy.html"), "<!doctype html><html><body><div id=o></div><script>document.getElementById('o').textContent='You won!\\nGuesses: 3';</script></body></html>");
-    const r = t.see_page({ path: "buggy.html" });
+    const r = await t.see_page({ path: "buggy.html" });
     ok("see_page: renders + exposes the literal-newline bug as text", r.ok && /You won!/.test(r.rendered) && r.rendered.includes("\n"));
   } else {
     ok("see_page: (no browser installed — real-render test skipped)", true);
@@ -1378,7 +1378,7 @@ console.log("== 35. play_game — drive + observe a running game (Block 15, keys
   } else {
     ok("play_game: (no browser installed — live drive skipped)", true);
   }
-  ok("play_game: requires a path", new Tools(tmp).play_game({}).ok === false);
+  ok("play_game: requires a path", (await new Tools(tmp).play_game({})).ok === false);
 }
 
 console.log("== 36. see_asset — the Asset Studio: generate → SEE → refine (Block 16) ==");
@@ -1669,7 +1669,7 @@ console.log("== 43. play_levels — multi-level: load, distinct (anti-clone), pl
   const h = buildLevelsHarness("<html><body><canvas></canvas></body></html>", { steps: 30 });
   ok("levels harness: injects the level driver reading proovSim.levels + load(i)", /proovSim/.test(h) && /__proov_levels/.test(h) && /STEPS=30/.test(h));
 
-  ok("play_levels: requires a path", new Tools(tmp).play_levels({}).error === "NO_PATH");
+  ok("play_levels: requires a path", (await new Tools(tmp).play_levels({})).error === "NO_PATH");
 
   if (findBrowser()) {
     const d = fs.mkdtempSync(path.join(os.tmpdir(), "levels-"));
@@ -1868,12 +1868,12 @@ console.log("== 48. web verification — catch a JS-broken / blank page before d
 
   // see_page now reports broken:true with the errors (the verification gap, closed)
   const t = new Tools(d);
-  const sp = t.see_page({ path: "index.html" });
+  const sp = await t.see_page({ path: "index.html" });
   ok("see_page: flags a JS-broken page as broken with the syntax error surfaced", sp.broken === true && sp.errors.some((e) => /SyntaxError/.test(e)) && /NOT declare done|NOT working|BROKEN/.test(sp.note));
 
   // a clean page is NOT flagged
   fs.writeFileSync(path.join(d, "game.js"), "let s=0;\nfunction t(){ if(s>10){s=0;} else { s++; } }\nt();\n");
-  const ok2 = t.see_page({ path: "index.html" });
+  const ok2 = await t.see_page({ path: "index.html" });
   ok("see_page: a syntactically clean page is not flagged broken", !ok2.broken);
   fs.rmSync(d, { recursive: true, force: true });
 }
@@ -1882,7 +1882,7 @@ console.log("== 49. autoplay — play the REAL game with real input (Block 28) =
 {
   const { findBrowser } = await import("./src/eye.mjs");
   const t = new Tools(tmp);
-  ok("autoplay: requires a path", t.autoplay({}).error === "NO_PATH");
+  ok("autoplay: requires a path", (await t.autoplay({})).error === "NO_PATH");
   if (findBrowser()) {
     const d = fs.mkdtempSync(path.join(os.tmpdir(), "autoplay-"));
     fs.writeFileSync(path.join(d, "good.html"),
@@ -1978,7 +1978,7 @@ console.log("== 53. see_page for WebGL/3D — real runtime error + blank-canvas,
       "var gl=document.getElementById('c').getContext('webgl',{preserveDrawingBuffer:true});var player;" +
       "function loop(){gl.clear(gl.COLOR_BUFFER_BIT);player.x+=1;requestAnimationFrame(loop);}" +  // player undefined → throws
       "loop();</script></body></html>");
-    const b = t.see_page({ path: "broken3d.html" });
+    const b = await t.see_page({ path: "broken3d.html" });
     ok("see_page (WebGL): catches the REAL runtime TypeError, not a false WebGL-context error", b.broken === true && b.errors.some((e) => /TypeError|undefined/.test(e)) && !b.errors.some((e) => /Error creating WebGL context/.test(e)));
 
     // a WebGL game that loads but draws NOTHING (clears to a flat colour, no geometry) → blank, no error.
@@ -1986,7 +1986,7 @@ console.log("== 53. see_page for WebGL/3D — real runtime error + blank-canvas,
       "<!doctype html><html><body><canvas id=c width=200 height=150></canvas><script>" +
       "var gl=document.getElementById('c').getContext('webgl',{preserveDrawingBuffer:true});gl.clearColor(0.1,0.1,0.1,1);" +
       "function loop(){gl.clear(gl.COLOR_BUFFER_BIT);requestAnimationFrame(loop);}loop();</script></body></html>");
-    const bl = t.see_page({ path: "blank3d.html" });
+    const bl = await t.see_page({ path: "blank3d.html" });
     ok("see_page (WebGL): flags a blank canvas (drew nothing) even with no JS error", bl.broken === true && bl.blank === true);
     fs.rmSync(d, { recursive: true, force: true });
   } else {
@@ -2224,7 +2224,7 @@ console.log("== 62. node servers — run a generated app on a URL:port, verify o
     ok("http_request: hits a route → status + parsed json", api.ok === true && api.status === 200 && api.json && api.json.ok === true && /json/.test(api.contentType));
     const { findBrowser } = await import("./src/eye.mjs");
     if (findBrowser()) {
-      const page = t.see_page({ url: s.url });
+      const page = await t.see_page({ url: s.url });
       ok("see_page {url}: renders a served page (post-JS visible text)", page.ok === true && /Hello from Node/.test(page.rendered || ""));
     } else { ok("see_page {url}: (no browser — live skipped)", true); }
     const stopped = t.stop_server({});
@@ -2424,7 +2424,7 @@ console.log("== 67. syntax-error LOCATION — map to the file line + show node's
   const jc = checkPageJs(path.join(d, "index.html"));
   ok("syntax: checkPageJs reports the FILE line (9) + a code frame", jc.ok === false && jc.errors[0].line === 9 && /width: 800/.test(jc.errors[0].frame || ""));
   // see_page surfaces "around <file> line N" + the frame so the model can locate + fix it.
-  const sp = t.see_page({ path: "index.html" });
+  const sp = await t.see_page({ path: "index.html" });
   ok("see_page: a broken page surfaces the line number + the offending source frame", sp.broken === true && sp.errors.some((e) => /around index\.html line 9/.test(e) && /width: 800/.test(e) && /\^/.test(e)));
   fs.rmSync(d, { recursive: true, force: true });
 }
@@ -2477,6 +2477,420 @@ console.log("== 68. runUntilDone supervisor — drive a session to completion, n
   // continuous mode is ON BY DEFAULT in config.
   const { DEFAULTS } = await import("./src/config.mjs");
   ok("supervisor: untilDone is ON by default (continuous mode)", DEFAULTS.untilDone === true && DEFAULTS.untilDoneMaxRounds === 12);
+
+  // HONEST VERIFICATION on exit (Block 70): the report carries verifiedStatus pass/fail/unverified.
+  const mkV = (turns, toolsExtra) => { let i = 0; const tasks = []; return { tools: { tasks, ...toolsExtra }, totals: () => ({ cost: i * 0.01 }), runTurn: async () => { const r = turns[Math.min(i, turns.length - 1)](tasks, i); i++; return r; } }; };
+  const doneA = (t) => { t.length = 0; t.push({ status: "completed", subject: "A" }); return { done: true, verified: null, trace: [] }; };
+  // a failing task-check → NOT success, verifiedStatus 'fail' (never silently "done")
+  const rFail = await runUntilDone(mkV([doneA], { _verifyTaskChecks: () => ({ checked: 1, failures: [{ subject: "A", reason: "check failed" }] }) }), "build", { maxRounds: 4, noProgressStop: 3 });
+  ok("verify-on-exit: a failing task-check → verifiedStatus 'fail', not 'success'", rFail.verifiedStatus === "fail" && rFail.verified === false && rFail.outcome !== "success");
+  // BINARY status (Block 77): no hard check failed → 'pass' (no 'unverified'/'soft' paths).
+  const rNone = await runUntilDone(mkV([doneA], {}), "build", { maxRounds: 4 });
+  ok("verify-on-exit: done with nothing failing → 'pass' (binary)", rNone.outcome === "success" && rNone.verifiedStatus === "pass");
+  const rPass = await runUntilDone(mkV([doneA], { _verifyTaskChecks: () => ({ checked: 1, failures: [] }) }), "build", { maxRounds: 4 });
+  ok("verify-on-exit: a passing task-check → 'pass'", rPass.outcome === "success" && rPass.verifiedStatus === "pass" && rPass.verification.ran.includes("task-checks"));
+  ok("verify-on-exit: status is ONLY 'pass' or 'fail' (no soft/unverified)", ["pass", "fail"].includes(rNone.verifiedStatus) && ["pass", "fail"].includes(rFail.verifiedStatus));
+  // ABORT must NOT run finalVerify (Block 75 fix): a session whose checks would THROW still aborts cleanly.
+  const sAbort = { tools: { tasks: [], _verifyTaskChecks: () => { throw new Error("should not run on abort"); } }, totals: () => ({ cost: 0 }), runTurn: async () => ({ aborted: true, trace: [] }) };
+  const rAbort = await runUntilDone(sAbort, "build", { maxRounds: 4 });
+  ok("verify-on-exit: aborted run does NOT run final checks", rAbort.outcome === "aborted" && rAbort.verification === null);
+
+  // REMEDIATION, NOT ESCALATION (Block 77): a verification FAILURE feeds back detailed failures + "new
+  // checklist", on the SAME model — never swaps to strongModel.
+  const { remediationContinuation } = await import("./src/supervisor.mjs");
+  const rc = remediationContinuation({ status: "fail", failures: ["test failed: expected 5 got 4", "lint: 2 errors"] }, []);
+  ok("remediation: continuation lists the failures + asks for a NEW checklist of fixes", /VERIFICATION FAILED/.test(rc) && /expected 5 got 4/.test(rc) && /task_write/.test(rc) && /NEW (PLAN|checklist)/i.test(rc));
+  let swapped = false;
+  const sRem = { tools: { tasks: [], _verifyTaskChecks: () => ({ checked: 1, failures: [{ subject: "A", reason: "check failed" }] }) }, provider: { get model() { return "cheap/x"; }, set model(v) { swapped = true; } }, totals: () => ({ cost: 0 }), runTurn: async () => { sRem.tools.tasks = [{ status: "completed", subject: "A" }]; return { done: true, verified: null, trace: [] }; } };
+  await runUntilDone(sRem, "build", { maxRounds: 3, noProgressStop: 9, strongModel: "strong/x" });
+  ok("remediation: the model is NEVER swapped to the strong model (escalation removed)", swapped === false);
+
+  // ALWAYS ITERATE IF NOT VERIFIED (Block 78): a run that BUILT code but has NO passing verification must not
+  // silently succeed — it iterates and asks for a real test.
+  const prompts = [];
+  const sBuilt = { tools: { tasks: [] }, totals: () => ({ cost: 0 }), runTurn: async (tk) => { prompts.push(tk); return { done: true, verified: null, trace: [{ tool: "create_file", ok: true }] }; } };
+  const rBuilt = await runUntilDone(sBuilt, "build a thing", { maxRounds: 3, noProgressStop: 9 });
+  ok("verify: built-but-unverified ITERATES (no silent success) + asks for a real test", rBuilt.outcome !== "success" && rBuilt.verifiedStatus === "fail" && prompts.some((p) => /NOTHING verifies it/i.test(p)));
+  // a build that's NEVER verified can't reach 'pass' even at a brake.
+  ok("verify: an unverified build never reports verifiedStatus 'pass'", rBuilt.verifiedStatus === "fail");
+  // FAIL-CLOSED: an error INSIDE the verifier is a FAILURE, never a silent pass.
+  const sErr = { tools: { tasks: [], _verifyTaskChecks: () => { throw new Error("boom"); } }, totals: () => ({ cost: 0 }), runTurn: async () => ({ done: true, verified: null, trace: [] }) };
+  const rErr = await runUntilDone(sErr, "x", { maxRounds: 2, noProgressStop: 9 });
+  ok("verify: a verifier ERROR is a FAILURE, never a silent pass (fail-closed)", rErr.verifiedStatus === "fail" && rErr.outcome !== "success");
+
+  // costCap:0 means NO cap (matches the REPL's untilDoneCostCap semantics) — must NOT stop after round 1.
+  // Regression for the eval-harness bug: a bare `costCap ?? Infinity` treated 0 as a literal $0 cap.
+  const s0 = mk([(t) => { t.length = 0; t.push({ status: "in_progress", subject: "A" }); return { done: false, stopped: "ran out", trace: [] }; }, (t) => { t[0].status = "completed"; return { done: true, verified: null, trace: [] }; }]);
+  const r0 = await runUntilDone(s0, "build", { maxRounds: 10, costCap: 0, noProgressStop: 99 });
+  ok("supervisor: costCap:0 means NO cap (does not stop after round 1)", r0.outcome === "success" && r0.rounds === 2);
+}
+
+console.log("== 68b. task-fidelity gate — did the code USE what the prompt named? (Block 58) ==");
+{
+  const { extractNamedRequirements, taskFidelityMisses } = await import("./src/fidelity.mjs");
+
+  // Extraction: a github repo URL is the canonical "use this" signal → the repo slug, with sub-stems.
+  const named = extractNamedRequirements("make a puzzle with this: https://github.com/dhyabi2/esg-coreach");
+  ok("fidelity: extracts the github repo slug + stems", named.length === 1 && named[0].entity === "esg-coreach" && named[0].stems.includes("coreach") && !named[0].stems.includes("esg"));
+  // "use the X certifier/library/..." (kind-noun) is caught; bare "use this"/generic prompts are NOT (precision).
+  ok("fidelity: 'use the X certifier' is caught", extractNamedRequirements("use the esg-coreach certifier").some((n) => n.entity === "esg-coreach"));
+  ok("fidelity: generic prompts name nothing (no false nags)", extractNamedRequirements("build a tetris game with smooth animation").length === 0 && extractNamedRequirements("make a todo app").length === 0);
+
+  // The grep: a named requirement found NOWHERE in code MISSES; present anywhere PASSES.
+  const prompt = "puzzle using https://github.com/dhyabi2/esg-coreach";
+  const miss = taskFidelityMisses(prompt, { text: "const x = drawgenericgame();", files: ["index.html"] });
+  ok("fidelity: a prompt-named lib referenced nowhere → MISS (the real eval failure)", miss.misses.length === 1 && miss.misses[0].entity === "esg-coreach");
+  const pass = taskFidelityMisses(prompt, { text: 'import {certify} from "./vendor/coreach.mjs";', files: ["game.js"] });
+  ok("fidelity: the same lib referenced (vendored) → PASS", pass.misses.length === 0);
+  // Empty/absent code never gates (nothing built yet → not a fidelity failure).
+  ok("fidelity: no files → no misses (don't gate empty workspace)", taskFidelityMisses(prompt, { text: "", files: [] }).misses.length === 0);
+
+  // Wiring: the tool method exists and returns null when nothing is named (no false gate).
+  const { Tools } = await import("./src/tools.mjs");
+  const tf = new Tools(os.tmpdir());
+  ok("fidelity: Tools._verifyTaskFidelity is wired", typeof tf._verifyTaskFidelity === "function" && tf._verifyTaskFidelity("make a todo app") === null);
+}
+
+console.log("== 68c. served-game URL routing — a URL never becomes FILE_NOT_FOUND (Block 58) ==");
+{
+  const { Tools, pickUrl } = await import("./src/tools.mjs");
+  // pickUrl accepts a URL in EITHER slot (the agent often puts the served URL in `path` by mistake).
+  ok("url-route: pickUrl reads a url arg", pickUrl("http://127.0.0.1:5000", undefined) === "http://127.0.0.1:5000");
+  ok("url-route: pickUrl rescues a URL passed as path", pickUrl(undefined, "http://127.0.0.1:5000") === "http://127.0.0.1:5000");
+  ok("url-route: pickUrl ignores a real file path", pickUrl(undefined, "index.html") === "");
+
+  // _resolve REJECTS a URL with direction (instead of mangling it into a junk path → FILE_NOT_FOUND, the bug
+  // that trapped the agent into editing server.js forever).
+  const t = new Tools(os.tmpdir());
+  let threw = "";
+  try { t._resolve("http://127.0.0.1:58422"); } catch (e) { threw = e.message; }
+  ok("url-route: _resolve rejects a URL-as-path with a directional error (not FILE_NOT_FOUND)", /is a URL/.test(threw) && /do NOT edit the server/i.test(threw));
+
+  // The three drive tools accept a `url` and are async (route to the HTTP harness). With no browser they
+  // return a DRIVE error — crucially NOT FILE_NOT_FOUND / NO_PATH (so the agent won't blame the server).
+  const noFileErr = async (p) => { const r = await t.play_game(p); return r.error !== "FILE_NOT_FOUND" && r.error !== "NO_PATH"; };
+  ok("url-route: play_game {url} does NOT return FILE_NOT_FOUND/NO_PATH", await noFileErr({ url: "http://127.0.0.1:9" }));
+  ok("url-route: play_game {path:'http://...'} is rescued (not FILE_NOT_FOUND)", await noFileErr({ path: "http://127.0.0.1:9" }));
+  ok("url-route: play_game/play_levels/autoplay are async (return promises)", typeof t.play_game({}).then === "function" && typeof t.play_levels({}).then === "function" && typeof t.autoplay({}).then === "function");
+  // served vision-checklist parity wiring exists.
+  ok("url-route: _servedCanvasDataURL + _verifyServedGame(visionCheck) wired (served vision parity)", typeof t._servedCanvasDataURL === "function" && typeof t._verifyServedGame === "function");
+}
+
+console.log("== 68d. screenshot-thrash guard — build, don't eyeball every edit (Block 59) ==");
+{
+  const mkTools = () => ({ tasks: [{ id: 1, status: "in_progress", subject: "Build level manager" }], see_page: () => ({ ok: true, note: "rendered" }) });
+  const run = async (script, tools) => {
+    let i = 0;
+    const provider = { chat: async () => ({ text: script[i++] ?? '{"tool":"done","args":{}}', usage: {}, raw: {} }), totals: () => ({ cost: 0 }) };
+    return runLoop({ provider, tools, toolMap: { see_page: (a) => tools.see_page(a) }, systemPrompt: "s", task: "x", maxSteps: 9 });
+  };
+  // Repeated VISUAL see_page with an open task → one nudge at the cap (4), naming the next task.
+  const visualScript = Array(6).fill('{"tool":"see_page","args":{"path":"index.html","visual":true}}');
+  const r = await run(visualScript, mkTools());
+  ok("thrash: 4 visual checks with an open task → ONE nudge to go build", r.trace.some((s) => s.visualThrash === 4) && r.messages.some((m) => typeof m.content === "string" && /Work, then watch/.test(m.content)));
+  ok("thrash: nudge fires exactly once (not every screenshot)", r.trace.filter((s) => s.visualThrash).length === 1);
+  ok("thrash: the nudge names the next open task", r.messages.some((m) => typeof m.content === "string" && /Build level manager/.test(m.content)));
+  // text-mode see_page (no visual) is a cheap legit syntax/blank check — must NOT count toward thrash.
+  const r2 = await run(Array(6).fill('{"tool":"see_page","args":{"path":"index.html"}}'), mkTools());
+  ok("thrash: text-mode see_page does NOT trigger the guard", !r2.trace.some((s) => s.visualThrash));
+  // no open tasks → nothing left to build → no nudge.
+  const r3 = await run(visualScript, { tasks: [{ id: 1, status: "completed", subject: "done" }], see_page: () => ({ ok: true }) });
+  ok("thrash: no open tasks → no nudge", !r3.trace.some((s) => s.visualThrash));
+}
+
+console.log("== 68e. served-app run-offer gate — verify before offering to start (Block 60) ==");
+{
+  const { Tools } = await import("./src/tools.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proov-served-"));
+  const t = new Tools(dir);
+  ok("served-gate: _verifyServedApp exists", typeof t._verifyServedApp === "function");
+  // a plain dir with NO startable server → ran:false (never blocks a non-server project's run offer).
+  const r = await t._verifyServedApp();
+  ok("served-gate: no startable server → ran:false (doesn't block the offer)", r && r.ran === false);
+  // a project WITH a start script but a server that fails to listen → ran:true + a problem (offer blocked).
+  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "x", scripts: { start: "node server.js" } }));
+  fs.writeFileSync(path.join(dir, "server.js"), "process.exit(1);"); // exits before listening
+  const r2 = await t._verifyServedApp();
+  ok("served-gate: a server that won't start → ran:true + problem (offer blocked)", r2 && r2.ran === true && typeof r2.problem === "string" && r2.problem.length > 0);
+}
+
+console.log("== 68f. structure source-bundle — map split-file games, not just index.html (Block 61) ==");
+{
+  const { bundleGameSource } = await import("./src/structure.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proov-bundle-"));
+  fs.writeFileSync(path.join(dir, "index.html"), '<canvas id="g"></canvas><script src="engine.js"></script>');
+  fs.writeFileSync(path.join(dir, "engine.js"), 'const ENEMY_PATROL = true; class Player{} function drawHUD(){} const levels=[1,2,3];');
+  fs.writeFileSync(path.join(dir, "server.js"), 'require("http").createServer().listen(process.env.PORT);');
+  const raw = fs.readFileSync(path.join(dir, "index.html"), "utf8");
+  const bundled = bundleGameSource(raw, dir, fs, path);
+  // the real game logic lives in engine.js — the HTML shell alone misses it; the bundle pulls it in.
+  ok("bundle: pulls in the external engine.js the HTML only links", !/ENEMY_PATROL/.test(raw) && /ENEMY_PATROL/.test(bundled) && /drawHUD/.test(bundled));
+  ok("bundle: excludes the Node server file (not client game code)", !/createServer/.test(bundled));
+  fs.mkdirSync(path.join(dir, "node_modules", "x"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "node_modules", "x", "dep.js"), "const VENDOR_TOKEN=1;");
+  ok("bundle: skips node_modules", !/VENDOR_TOKEN/.test(bundleGameSource(raw, dir, fs, path)));
+  ok("bundle: no workdir → html unchanged (safe fallback)", bundleGameSource(raw, null, fs, path) === raw);
+}
+
+console.log("== 68g. served-preferred done-gate — judge the served reality, not the file (Block 62) ==");
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proov-served62-"));
+  // a real static game file EXISTS — but the project also serves, so the served gate must win over it.
+  fs.writeFileSync(path.join(dir, "index.html"), '<canvas id="c"></canvas><script>function loop(){requestAnimationFrame(loop)}loop()</script>');
+  let servedCalls = 0, staticAutoplay = 0;
+  const tools = {
+    workdir: dir, tasks: [],
+    autoplay: () => { staticAutoplay++; return { ok: true, responds: true }; },
+    see_page: () => ({ ok: true }),
+    _serverStartCommand: () => "node server.js",
+    _verifyServedGame: async () => { servedCalls++; return { ran: true, problem: "the served game is FROZEN over HTTP" }; },
+  };
+  let i = 0;
+  const script = ['{"tool":"done","args":{"summary":"d"}}', '{"tool":"done","args":{"summary":"d"}}'];
+  const provider = { chat: async () => ({ text: script[i++] ?? '{"tool":"done","args":{}}', usage: {}, raw: {} }), totals: () => ({ cost: 0 }) };
+  const res = await runLoop({ provider, tools, toolMap: {}, systemPrompt: "s", task: "make a mario game", maxSteps: 6 });
+  ok("served-pref: a project with a start script runs the SERVED gate, not the static file gate", servedCalls >= 1 && res.trace.some((s) => s.servedGate) && !res.trace.some((s) => s.gameGate));
+  ok("served-pref: the static file autoplay is NOT used when a server exists", staticAutoplay === 0);
+}
+
+console.log("== 68h. next-step suggester — propose a real, grounded next gap (Block 63) ==");
+{
+  const { structureGaps } = await import("./src/structure.mjs");
+  const { suggestNextStep } = await import("./src/nextstep.mjs");
+  const basic = '<canvas></canvas><script>function loop(){requestAnimationFrame(loop)}loop()</script>';
+  const gaps = structureGaps(basic, "make a mario platformer game");
+  ok("nextstep: structureGaps lists absent layers, required-first", gaps.length > 0 && gaps[0].required === true && gaps.every((g, i) => i === 0 || Number(gaps[i - 1].required) >= Number(g.required)));
+  // grounded: adding more game code can only REDUCE the gap list, never grow it.
+  const more = basic + '<script>class Player{} const enemies=[{},{}]; function drawHUD(){score} const levels=[1,2]; ctx.createPattern();</script>';
+  ok("nextstep: more real content → no MORE gaps (suggestions track the actual build)", structureGaps(more, "mario platformer").length <= gaps.length);
+  // the suggester picks the top gap and phrases an accept-with-yes task naming a specific layer.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proov-next-"));
+  fs.writeFileSync(path.join(dir, "index.html"), basic);
+  const s = suggestNextStep(dir, "make a mario platformer game", { fsMod: fs, pathMod: path, gameFile: "index.html" });
+  ok("nextstep: suggests a concrete next gap that expands into a checklist task", s && typeof s.offer === "string" && /task_write|CHECKLIST/i.test(s.task) && /Improve the game/.test(s.task) && !!s.id);
+  // stays quiet when there's no game (never generic busywork).
+  ok("nextstep: no gameFile → null (stays quiet)", suggestNextStep(dir, "x", { fsMod: fs, pathMod: path, gameFile: null }) === null);
+}
+
+console.log("== 68i. visual-match gate — reproduce a reference per-asset ≥95% (Block 64) ==");
+{
+  const { Tools } = await import("./src/tools.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proov-ref-"));
+  const t = new Tools(dir);
+  ok("vmatch: no reference image → _referenceImage null (gate dormant)", t._referenceImage() === null);
+  fs.writeFileSync(path.join(dir, "mockup.png"), "x");
+  ok("vmatch: detects a reference (mockup.png)", t._referenceImage() === "mockup.png");
+
+  const run = async (tools, n = 4) => {
+    let i = 0; const script = Array(n).fill('{"tool":"done","args":{"summary":"d"}}');
+    const provider = { chat: async () => ({ text: script[i++] ?? '{"tool":"done","args":{}}', usage: {}, raw: {} }), totals: () => ({ cost: 0 }) };
+    return runLoop({ provider, tools, toolMap: {}, systemPrompt: "s", task: "reproduce the mockup", maxSteps: 8 });
+  };
+  // reference present but never verified per-asset → gate blocks, bounded to 3, then lets through (no deadlock).
+  const r1 = await run({ workdir: dir, tasks: [], _referenceImage: () => "reference.png", lastVisualMatch: null });
+  ok("vmatch: a reference with no per-asset compare → gate blocks (bounded 3, no deadlock)", r1.trace.filter((s) => s.visualMatchGate).length === 3 && r1.done);
+  // a per-asset compare that FAILED the ≥95 bar → blocked.
+  const r2 = await run({ workdir: dir, tasks: [], _referenceImage: () => "reference.png", lastVisualMatch: { ran: true, perAsset: true, allPass: false, assetsOff: ["tower"], target: "reference.png" } });
+  ok("vmatch: a sub-95 per-asset match → blocked", r2.trace.some((s) => s.visualMatchGate));
+  // every asset ≥95 (allPass) against THAT reference → done accepted, no gate.
+  const r3 = await run({ workdir: dir, tasks: [], _referenceImage: () => "reference.png", lastVisualMatch: { ran: true, perAsset: true, allPass: true, target: "reference.png" } });
+  ok("vmatch: every asset ≥95% (allPass) → done accepted", r3.done && !r3.trace.some((s) => s.visualMatchGate));
+  // no reference → gate dormant (from-scratch builds are never blocked).
+  const r4 = await run({ workdir: dir, tasks: [], _referenceImage: () => null, lastVisualMatch: null });
+  ok("vmatch: no reference → gate dormant", r4.done && !r4.trace.some((s) => s.visualMatchGate));
+}
+
+console.log("== 68j. design-first image generation — draw the target, then build to it (Block 65) ==");
+{
+  const { extractImageDataUrl } = await import("./src/provider.mjs");
+  // parse the generated image out of an OpenRouter image-output response (documented shape + fallbacks).
+  ok("img-extract: documented images[] shape", extractImageDataUrl({ choices: [{ message: { images: [{ image_url: { url: "data:image/png;base64,AAAA" } }] } }] }) === "data:image/png;base64,AAAA");
+  ok("img-extract: content-block fallback", extractImageDataUrl({ choices: [{ message: { content: [{ image_url: { url: "data:image/png;base64,BBBB" } }] } }] }) === "data:image/png;base64,BBBB");
+  ok("img-extract: no image → null", extractImageDataUrl({ choices: [{ message: { content: "just text" } }] }) === null);
+
+  // the tool: a stub image provider → saves the PNG and returns the path (the reference the gate will use).
+  const { Tools } = await import("./src/tools.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proov-img-"));
+  const tinyPng = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+  const t = new Tools(dir, { provider: { generateImage: async () => ({ ok: true, dataUrl: tinyPng, model: "stub-img" }) } });
+  const r = await t.generate_image({ prompt: "a hero scene", out: "reference.png" });
+  ok("generate_image: saves the PNG + returns the path", r.ok && r.path === "reference.png" && fs.existsSync(path.join(dir, "reference.png")));
+  ok("generate_image: the saved reference is then detected by the visual-match gate", t._referenceImage() === "reference.png");
+  ok("generate_image: requires a prompt", (await t.generate_image({})).error === "NO_PROMPT");
+  ok("generate_image: no provider → clear error (degrades)", (await new Tools(dir, {}).generate_image({ prompt: "x" })).error === "NO_IMAGE_PROVIDER");
+  // config default points at an image model.
+  const { DEFAULTS: CFG } = await import("./src/config.mjs");
+  ok("imageModel default is set to an image model", typeof CFG.imageModel === "string" && /image/i.test(CFG.imageModel));
+}
+
+console.log("== 68k. beyond-the-frame — the reference is a 1% sample, build the whole game (Block 66) ==");
+{
+  const { beyondFrameViolation } = await import("./src/structure.mjs");
+  const oneScreen = '<canvas></canvas><script>function loop(){requestAnimationFrame(loop)}loop()</script>';
+  ok("beyond-frame: a single-screen game → flagged as a 1% sample", /1% SAMPLE/.test(beyondFrameViolation(oneScreen, "make a platformer") || ""));
+  ok("beyond-frame: multiple levels → ok", beyondFrameViolation(oneScreen + '<script>const levels=[{a:1},{b:2}];</script>', "platformer") === null);
+  ok("beyond-frame: ≥2 distinct game states → ok", beyondFrameViolation(oneScreen + '<script>let scene="menu"; if(dead)scene="gameover";</script>', "platformer") === null);
+  ok("beyond-frame: progression (nextLevel call) → ok", beyondFrameViolation(oneScreen + '<script>function nextLevel(){}</script>', "platformer") === null);
+  ok("beyond-frame: a non-game page → not flagged", beyondFrameViolation('<div>hello</div>', "a landing page") === null);
+  // DE-GAMED (Block 72): a single decorative keyword no longer passes — needs real structural evidence.
+  ok("beyond-frame de-gamed: one lone state keyword does NOT pass", /1% SAMPLE/.test(beyondFrameViolation(oneScreen + '<script>const x="gameover";</script>', "platformer") || ""));
+
+  // GATE: per-asset match passed, but the build is one screen → done blocked until the full game exists.
+  const run = async (tools, n = 4) => {
+    let i = 0; const script = Array(n).fill('{"tool":"done","args":{"summary":"d"}}');
+    const provider = { chat: async () => ({ text: script[i++] ?? '{"tool":"done","args":{}}', usage: {}, raw: {} }), totals: () => ({ cost: 0 }) };
+    return runLoop({ provider, tools, toolMap: {}, systemPrompt: "s", task: "reproduce + build the platformer", maxSteps: 8 });
+  };
+  const d1 = fs.mkdtempSync(path.join(os.tmpdir(), "proov-bf-"));
+  fs.writeFileSync(path.join(d1, "index.html"), oneScreen);
+  const lm = { ran: true, perAsset: true, allPass: true, target: "reference.png" };
+  const rA = await run({ workdir: d1, tasks: [], _referenceImage: () => "reference.png", lastVisualMatch: lm });
+  ok("beyond-frame gate: match passed but single-screen build → blocked", rA.trace.some((s) => s.beyondFrame));
+  fs.writeFileSync(path.join(d1, "engine.js"), "const levels=[{a:1},{b:2}]; function nextLevel(){}");
+  const rB = await run({ workdir: d1, tasks: [], _referenceImage: () => "reference.png", lastVisualMatch: lm });
+  ok("beyond-frame gate: full game (levels/progression) → accepted", rB.done && !rB.trace.some((s) => s.beyondFrame));
+}
+
+console.log("== 68l. design-first preflight — DRAW the reference before coding (enforced) (Block 67) ==");
+{
+  const { isVisualBuild } = await import("./src/loop.mjs");
+  ok("preflight: a game task is a visual build", isVisualBuild("make a tetris game with levels") === true);
+  ok("preflight: a UI/site task is visual", isVisualBuild("build a portfolio landing page") === true);
+  ok("preflight: a backend/CLI task is NOT visual", isVisualBuild("build a REST api in node") === false && isVisualBuild("refactor the parser library") === false);
+
+  const provider = { imageModel: "stub-img", hasKey: () => true, chat: async () => ({ text: '{"tool":"done","args":{}}', usage: {}, raw: {} }), totals: () => ({ cost: 0 }) };
+  const mk = (dir) => { let gen = 0; return { gen: () => gen, tools: { workdir: dir, tasks: [], generate_image: async ({ out } = {}) => { gen++; fs.writeFileSync(path.join(dir, out || "reference.png"), "x"); return { ok: true, path: out || "reference.png", model: "stub" }; }, _referenceImage: () => { try { fs.statSync(path.join(dir, "reference.png")); return "reference.png"; } catch { return null; } } } }; };
+
+  // a FRESH visual build with no reference → proov draws it BEFORE the first turn (deterministic, not the model).
+  const d1 = fs.mkdtempSync(path.join(os.tmpdir(), "proov-df-"));
+  const h1 = mk(d1);
+  const r1 = await runLoop({ provider, tools: h1.tools, toolMap: {}, systemPrompt: "s", task: "make a 2D platformer game with a HUD and levels", maxSteps: 1 });
+  ok("preflight: drew the reference BEFORE coding (generate_image called once)", h1.gen() === 1 && r1.trace.some((s) => s.designFirst === "reference.png") && fs.existsSync(path.join(d1, "reference.png")));
+
+  // a NON-visual task → no reference drawn.
+  const d2 = fs.mkdtempSync(path.join(os.tmpdir(), "proov-df-"));
+  const h2 = mk(d2);
+  await runLoop({ provider, tools: h2.tools, toolMap: {}, systemPrompt: "s", task: "build a REST api in node", maxSteps: 1 });
+  ok("preflight: a non-visual task → no reference drawn", h2.gen() === 0);
+
+  // a FOLLOW-UP to existing code → don't inject a reference mid-project.
+  const d3 = fs.mkdtempSync(path.join(os.tmpdir(), "proov-df-"));
+  fs.writeFileSync(path.join(d3, "index.html"), "<html>" + "x".repeat(500) + "</html>");
+  const h3 = mk(d3);
+  await runLoop({ provider, tools: h3.tools, toolMap: {}, systemPrompt: "s", task: "add a HUD to the game", maxSteps: 1 });
+  ok("preflight: a follow-up to existing code → no reference drawn", h3.gen() === 0);
+
+  // designFirst:false disables it.
+  const d4 = fs.mkdtempSync(path.join(os.tmpdir(), "proov-df-"));
+  const h4 = mk(d4);
+  await runLoop({ provider, tools: h4.tools, toolMap: {}, systemPrompt: "s", task: "make a game", maxSteps: 1, designFirst: false });
+  ok("preflight: designFirst:false disables it", h4.gen() === 0);
+  // ON by default in config.
+  const { DEFAULTS: CFG2 } = await import("./src/config.mjs");
+  ok("preflight: designFirst ON by default", CFG2.designFirst === true);
+}
+
+console.log("== 68m. per-task acceptance checks — never stack work on an unmet criterion (Block 68) ==");
+{
+  const { Tools } = await import("./src/tools.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proov-tc-"));
+  // a PASSING check (exit 0) completes the task.
+  const ta = new Tools(dir);
+  let r = ta.task_write({ tasks: [{ id: "1", subject: "a", status: "completed", check: "true" }] });
+  ok("taskcheck: a passing check completes the task", ta.tasks[0].status === "completed" && !r.checkFailed);
+  // a FAILING check keeps it in_progress + reports it (can't mark done on an unmet criterion).
+  const tb = new Tools(dir);
+  r = tb.task_write({ tasks: [{ id: "1", subject: "b", status: "completed", check: "false" }] });
+  ok("taskcheck: a failing check keeps the task in_progress + reports it", tb.tasks[0].status === "in_progress" && r.checkFailed && r.checkFailed.length === 1);
+  // a MISSING check tool is skipped (graceful), so it doesn't false-block.
+  const tc = new Tools(dir);
+  r = tc.task_write({ tasks: [{ id: "1", subject: "c", status: "completed", check: "proov_nonexistent_cmd_zzz --x" }] });
+  ok("taskcheck: a missing check tool is skipped (completes, graceful)", tc.tasks[0].status === "completed" && !r.checkFailed);
+  // a DESTRUCTIVE check command is refused.
+  const td = new Tools(dir);
+  r = td.task_write({ tasks: [{ id: "1", subject: "d", status: "completed", check: "rm -rf /" }] });
+  ok("taskcheck: a destructive check command is refused", td.tasks[0].status === "in_progress" && /destructive/.test((r.checkFailed && r.checkFailed[0].reason) || ""));
+  // the check runs only on the TRANSITION to completed (not re-run every write).
+  const te = new Tools(dir);
+  te.tasks = [{ id: "1", subject: "e", status: "completed", check: "false" }];   // already completed
+  r = te.task_write({ tasks: [{ id: "1", subject: "e", status: "completed", check: "false" }] });
+  ok("taskcheck: an already-completed task is not re-checked on rewrite", te.tasks[0].status === "completed" && !r.checkFailed);
+  // _verifyTaskChecks: finds failing checks; null when no task carries one.
+  const tf = new Tools(dir); tf.tasks = [{ id: "1", subject: "x", status: "completed", check: "false" }];
+  ok("taskcheck: _verifyTaskChecks finds failing checks", (tf._verifyTaskChecks() || {}).failures?.length === 1);
+  const tg = new Tools(dir); tg.tasks = [{ id: "1", subject: "y", status: "completed" }];
+  ok("taskcheck: _verifyTaskChecks → null when no checks", tg._verifyTaskChecks() === null);
+
+  // DONE-GATE: blocked while a task's check fails (bounded 3), accepted when it passes.
+  const run = async (tasks, n = 6) => {
+    const tools = new Tools(dir); tools.tasks = tasks;
+    let i = 0; const script = Array(n).fill('{"tool":"done","args":{"summary":"d"}}');
+    const provider = { chat: async () => ({ text: script[i++] ?? '{"tool":"done","args":{}}', usage: {}, raw: {} }), totals: () => ({ cost: 0 }) };
+    return runLoop({ provider, tools, toolMap: {}, systemPrompt: "s", task: "do the math", maxSteps: 8, designFirst: false });
+  };
+  const rFail = await run([{ id: "1", subject: "z", status: "completed", check: "false" }]);
+  ok("taskcheck gate: done blocked while a task check fails (bounded 3)", rFail.trace.filter((s) => s.taskCheckGate).length === 3);
+  const rPass = await run([{ id: "1", subject: "ok", status: "completed", check: "true" }], 1);
+  ok("taskcheck gate: a passing check → done accepted", rPass.done && !rPass.trace.some((s) => s.taskCheckGate));
+}
+
+console.log("== 68n. see_page verifies — describes what's seen + goal match, not a passive shot (Block 69) ==");
+{
+  const { Tools } = await import("./src/tools.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proov-sp-"));
+  // with a vision verifyModel + goal → a written WHAT'S-VISIBLE + MATCH verdict + missing list.
+  const visionProvider = { hasKey: () => true, chat: async () => ({ text: '{"seen":"a red box on a white page, no HUD or characters","matches":false,"missing":["a HUD","enemies","a themed background"]}' }) };
+  const tv = new Tools(dir, { verifyModel: "stub-vm", provider: visionProvider });
+  const rv = await tv._inspectShot("index.html", "data:image/png;base64,AAAA", "chrome", "a platformer with a HUD and enemies", { path: "index.html" });
+  ok("see_page verify: outputs WHAT'S VISIBLE + goal MATCH + missing", /WHAT'S VISIBLE/.test(rv.note) && /MATCH: NO/.test(rv.note) && rv.matches === false && rv.missing.includes("a HUD") && !!rv.seen);
+  // a passing match → MATCH: YES.
+  const okProvider = { hasKey: () => true, chat: async () => ({ text: '{"seen":"hero with a hat, two enemies, a score HUD, parallax bg","matches":true,"missing":[]}' }) };
+  const tv2 = new Tools(dir, { verifyModel: "stub-vm", provider: okProvider });
+  const rv2 = await tv2._inspectShot("index.html", "data:image/png;base64,AAAA", "chrome", "a platformer with a HUD and enemies", {});
+  ok("see_page verify: a matching render → MATCH: YES", /MATCH: YES/.test(rv2.note) && rv2.matches === true);
+  // no vision model / key → degrades to a plain screenshot (still works), with a tip.
+  const tplain = new Tools(dir, {});
+  const rp = await tplain._inspectShot("index.html", "data:image/png;base64,AAAA", "chrome", "a goal", {});
+  ok("see_page verify: degrades to screenshot-only without a vision model", !rp.seen && /screenshot shown to you/.test(rp.note) && !!rp.multimodal);
+  // see_page is async now and the broken-check (non-visual) still works.
+  const t = new Tools(dir);
+  ok("see_page: still flags a missing file (FILE_NOT_FOUND), now async", (await t.see_page({ path: "nope.html" })).error === "FILE_NOT_FOUND");
+}
+
+console.log("== 68o. plan-first gate — decompose a substantial task before building (Block 73) ==");
+{
+  const { isSubstantialTask } = await import("./src/loop.mjs");
+  ok("plan-first: a short single-action task is NOT substantial", isSubstantialTask("fix the typo on line 4") === false);
+  ok("plan-first: a multi-part task IS substantial", isSubstantialTask("build a todo app with auth, a dashboard, and CSV export") === true);
+  ok("plan-first: a long task IS substantial", isSubstantialTask("x".repeat(240)) === true);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proov-plan-"));
+  const run = async (task, tasks, script) => {
+    let i = 0; const tools = { workdir: dir, tasks, edit_file: () => ({ ok: true }) };
+    const provider = { chat: async () => ({ text: script[i++] ?? '{"tool":"done","args":{}}', usage: {}, raw: {} }), totals: () => ({ cost: 0 }) };
+    return runLoop({ provider, tools, toolMap: { edit_file: (a) => tools.edit_file(a) }, systemPrompt: "s", task, maxSteps: 5, designFirst: false });
+  };
+  const big = "build a todo app with auth, a dashboard, and CSV export";
+  const editThenDone = ['{"tool":"edit_file","args":{"path":"a.js"}}', '{"tool":"done","args":{}}'];
+  const r1 = await run(big, [], editThenDone);
+  ok("plan-first: first edit on a substantial task with no plan → nudge once", r1.trace.filter((s) => s.planNudge).length === 1);
+  const r2 = await run(big, [{ id: "1", subject: "x", status: "in_progress" }], editThenDone);
+  ok("plan-first: with a plan already present → no nudge", !r2.trace.some((s) => s.planNudge));
+  const r3 = await run("fix the typo", [], editThenDone);
+  ok("plan-first: a trivial task → no nudge", !r3.trace.some((s) => s.planNudge));
+}
+
+console.log("== 68p. workflow events — emit BPMN-step-tagged events to a sink (Block 76) ==");
+{
+  const { stepFor, makeEmitter } = await import("./src/events.mjs");
+  ok("events: stepFor maps tool→exec, done→gwDone, gate→g*, verify→fv, fail→remediate, pass→succ", stepFor({ type: "tool_result", tool: "edit_file" }) === "exec" && stepFor({ type: "tool_start", tool: "done" }) === "gwDone" && stepFor({ type: "gate", gate: "task-check" }) === "g2" && stepFor({ type: "gate", gate: "plan" }) === "gwPlan" && stepFor({ type: "verify" }) === "fv" && stepFor({ type: "done", status: "fail" }) === "remediate" && stepFor({ type: "done", status: "pass" }) === "succ");
+  ok("events: no sink → disabled no-op", makeEmitter({}).enabled === false);
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "proov-ev-")), "ev.ndjson");
+  const em = makeEmitter({ eventsFile: f, runId: "t1" });
+  ok("events: a file sink is enabled", em.enabled === true);
+  em.emit({ type: "round", n: 1 }); em.emit({ type: "tool_start", tool: "edit_file" }); em.emit({ type: "done", status: "pass" });
+  const lines = fs.readFileSync(f, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  ok("events: file sink appends NDJSON with runId/seq/step", lines.length === 3 && lines[0].runId === "t1" && lines[0].seq === 0 && lines[1].step === "exec" && lines[2].step === "succ");
 }
 
 console.log("== 69. animation-driver gate — a static 3D character is rejected (Block 48) ==");
@@ -2498,7 +2912,7 @@ console.log("== 69. animation-driver gate — a static 3D character is rejected 
   // the rule is exported + wired into the gate the same way assetSourceViolation is (loop.mjs + tools).
   const loopSrc = fs.readFileSync(path.join(process.cwd(), "src", "loop.mjs"), "utf8");
   const toolsSrc = fs.readFileSync(path.join(process.cwd(), "src", "tools.mjs"), "utf8");
-  ok("anim gate: animationDriverViolation is wired into the static + served done-gates", /animationDriverViolation\(html, task\)/.test(loopSrc) && /animationDriverViolation\(html, task\)/.test(toolsSrc));
+  ok("anim gate: animationDriverViolation is wired into the static + served done-gates (over the bundled source)", /animationDriverViolation\(html, task\)/.test(loopSrc) && /animationDriverViolation\(srcBundle, task\)/.test(toolsSrc) && /bundleGameSource\(/.test(loopSrc) && /bundleGameSource\(/.test(toolsSrc));
 
   // Block 49: Node-on-a-URL is the DEFAULT web deliverable (not a lone static index.html).
   const { Session } = await import("./src/agent.mjs");
@@ -2506,10 +2920,10 @@ console.log("== 69. animation-driver gate — a static 3D character is rejected 
   ok("web default: the system prompt makes a Node server the default web deliverable", /WEB DEFAULT/.test(sysPrompt) && /process\.env\.PORT/.test(sysPrompt) && /lone static|single HTML file|static page/i.test(sysPrompt));
 }
 
-console.log("== 70. strong-model escalation — cheap default, strong only when STUCK (~1%) (Block 50) ==");
+console.log("== 70. NO model escalation — same model always; remediation on failure (Block 77) ==");
 {
   const { runUntilDone } = await import("./src/supervisor.mjs");
-  // fake session whose provider.model is mutable; capture which model each turn ran on.
+  // Even with strongModel set and a STUCK run, the model must NEVER be swapped (escalation removed).
   const used = [];
   const tasks = [{ status: "in_progress", subject: "Y" }]; let i = 0;
   const session = {
@@ -2517,15 +2931,8 @@ console.log("== 70. strong-model escalation — cheap default, strong only when 
     runTurn: async () => { used.push(session.provider.model); i++; return { done: false, stopped: "x", trace: [{ failStop: "edit_file|NO_ANCHOR" }] }; },
   };
   const r = await runUntilDone(session, "build", { maxRounds: 20, noProgressStop: 3, strongModel: "STRONG" });
-  ok("escalation: a stuck round runs on the STRONG model, the rest on cheap", used[0] === "cheap" && used.includes("STRONG") && r.outcome === "dead_end");
-  ok("escalation: provider.model is reverted to the cheap default after the run", session.provider.model === "cheap");
-  // no strongModel → never escalates (stays cheap).
-  const used2 = []; const s2 = { tools: { tasks: [{ status: "in_progress", subject: "Z" }] }, provider: { model: "cheap" }, totals: () => ({ cost: 0 }), runTurn: async () => { used2.push(s2.provider.model); return { done: false, stopped: "x", trace: [{ failStop: "e" }] }; } };
-  await runUntilDone(s2, "build", { maxRounds: 4, noProgressStop: 3 });
-  ok("escalation: with no strongModel, every turn stays on the cheap model", used2.every((m) => m === "cheap"));
-  // config defaults expose strongModel.
-  const { DEFAULTS } = await import("./src/config.mjs");
-  ok("escalation: strongModel is a config key (default off)", "strongModel" in DEFAULTS && DEFAULTS.strongModel === "");
+  ok("no-escalation: EVERY round stays on the SAME model, even with strongModel set", used.length > 1 && used.every((m) => m === "cheap") && session.provider.model === "cheap");
+  ok("no-escalation: a stuck run still ends cleanly (dead_end), on the same model", r.outcome === "dead_end");
 }
 
 console.log("== 71. token-cost levers — cache accounting + TTL, truncate logs, downscale captures (Block 51) ==");
@@ -2613,6 +3020,11 @@ console.log("== 73. project-checks done-gate — gate ALL code on its own tests/
   pj(d, "some-nonexistent-tool-xyz-12345");
   const sk = t._verifyProjectChecks();
   ok("project-checks: a missing toolchain is SKIPPED, not failed (degrade gracefully)", sk.failures.length === 0 && sk.skipped.length === 1);
+  // FAIL-CLOSED (Block 78): a non-127 error that merely MENTIONS 'cannot find module' is a real FAILURE now
+  // (deps not installed → run install_deps), not a swallowed skip.
+  pj(d, 'node -e "throw new Error(\'Cannot find module foo\')"');
+  const cf = t._verifyProjectChecks();
+  ok("project-checks: 'cannot find module' is a FAILURE, not a graceful skip (Block 78)", cf.ran && cf.failures.length === 1 && cf.skipped.length === 0 && /find module/i.test(cf.failures[0].output || ""));
 
   // makeProjectVerify → the verify shape the done-gate consumes.
   pj(d, 'node -e "process.exit(1)"');
