@@ -31,9 +31,10 @@ export function suggestNextStep(workdir, task, { fsMod, pathMod, gameFile } = {}
       : "it's the highest-value polish layer you haven't built yet";
     return {
       id: top.id,
-      // the new TASK proov would run if the user accepts
-      task: `Add ${top.label} to the game, real (use the artkit), then verify and finish.`,
-      // the one-line OFFER shown to the user
+      // the new TASK proov runs automatically — it EXPANDS into a fresh checklist (Block 79): the agent
+      // decomposes the improvement into concrete sub-steps with runnable checks, implements + verifies each.
+      task: `Improve the game by adding ${top.label}. First call task_write with a CHECKLIST that decomposes this into concrete sub-steps (build the pieces, wire them in, add art/behaviour, handle edge cases) — give each mechanically-testable step a 'check'. Then implement every item for real (use the artkit), verify it works, mark each completed, and only then finish.`,
+      // the one-line note shown to the user
       offer: `add ${top.label}`,
       reason: why,
       required: top.required,

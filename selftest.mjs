@@ -2667,7 +2667,7 @@ console.log("== 68h. next-step suggester — propose a real, grounded next gap (
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proov-next-"));
   fs.writeFileSync(path.join(dir, "index.html"), basic);
   const s = suggestNextStep(dir, "make a mario platformer game", { fsMod: fs, pathMod: path, gameFile: "index.html" });
-  ok("nextstep: suggests a concrete next gap with a runnable task", s && typeof s.offer === "string" && /^Add /.test(s.task) && !!s.id);
+  ok("nextstep: suggests a concrete next gap that expands into a checklist task", s && typeof s.offer === "string" && /task_write|CHECKLIST/i.test(s.task) && /Improve the game/.test(s.task) && !!s.id);
   // stays quiet when there's no game (never generic busywork).
   ok("nextstep: no gameFile → null (stays quiet)", suggestNextStep(dir, "x", { fsMod: fs, pathMod: path, gameFile: null }) === null);
 }

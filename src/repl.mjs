@@ -306,6 +306,11 @@ export async function startRepl({ workdir, config, palette } = {}) {
   // Manual line queue: 'for await (line of rl)' loses buffered piped lines while a turn awaits.
   // We queue lines, process them serially, and pause input during a turn. Works for TTY and pipes.
   const queue = [];
+  // AUTONOMOUS SELF-IMPROVE (Block 79): after a clean done, proov auto-continues to the next improvement
+  // without asking. `autoImproved` remembers which structure gaps were already auto-applied (so an
+  // un-fillable gap can't loop); `autoTasks` marks the auto-queued continuations so a genuine NEW user
+  // request resets the guard.
+  const autoImproved = new Set(), autoTasks = new Set();
   let closed = false, busy = false, exited = false, resolveDone;
   const done = new Promise((r) => { resolveDone = r; });
   const safePrompt = () => { if (!closed && !exited) rl.prompt(); };
@@ -315,6 +320,7 @@ export async function startRepl({ workdir, config, palette } = {}) {
     busy = true;
     while (queue.length && !exited) {
       const input = queue.shift().trim();
+      if (autoTasks.has(input)) autoTasks.delete(input); else autoImproved.clear();   // new user request → reset the loop guard
       if (!input) { safePrompt(); continue; }
 
       const command = parseCommand(input);
@@ -421,65 +427,30 @@ export async function startRepl({ workdir, config, palette } = {}) {
         // last inner turn's stop reason; just carry the footer status.
         if (res.stopped) { if (!untilDone) process.stdout.write(p.yellow(`\n∅ ${res.stopped}\n`)); footerStatus = "incomplete"; }
         else if (!res.summary) process.stdout.write(p.dim("\n(done — no summary)\n"));
-        // Anticipate intent (Blocks 9 & 10): if the turn built a runnable artifact, show how to run it
-        // AND offer to actually demonstrate it (open the browser / run it), so "show me" really shows.
+        // Show HOW to run the built artifact (informational only). The interactive "run it now?" / open-the-
+        // browser step was REMOVED (Block 79) — proov doesn't interrupt the autonomous loop to open a browser.
         if (createdThisTurn.length) {
           const hint = detectRunHint(workdir, createdThisTurn);
-          if (hint) {
-            process.stdout.write("\n" + p.cyan(`▶ run ${hint.what} with:  ${hint.cmd}`) + "\n");
-            // Only OFFER to open it when the work is COMPLETELY done: the turn finished cleanly (done,
-            // not stopped) AND — for a web page — it actually WORKS (no JS/console errors, not blank).
-            // Otherwise just show the command; never ask to open an unfinished or broken page.
-            let okToOpen = process.stdin.isTTY && res.done && !res.stopped;
-            // not "completely done" if the agent's OWN task checklist still has incomplete items.
-            const openTasks = (session.tools.tasks || []).filter((t) => t.status !== "completed");
-            if (okToOpen && openTasks.length) {
-              okToOpen = false;
-              process.stdout.write(p.yellow(`  ⚠ not opening — ${openTasks.length} task${openTasks.length === 1 ? "" : "s"} still incomplete (the work isn't finished):\n`) + openTasks.slice(0, 4).map((t) => p.dim("    ☐ " + t.subject)).join("\n") + "\n" + p.dim("    ask me to finish, then it'll offer to open.\n"));
-            }
-            if (okToOpen && hint.kind === "open" && /\.html?$/i.test(hint.target || "")) {
-              try {
-                const chk = await session.tools.see_page({ path: hint.target });
-                if (chk && chk.broken) {
-                  okToOpen = false;
-                  process.stdout.write(p.yellow(`  ⚠ not opening — ${hint.target} has errors (it won't display right):\n`) + (chk.errors || []).slice(0, 4).map((e) => p.dim("    - " + e)).join("\n") + "\n" + p.dim("    fix these, then it'll offer to open.\n"));
-                }
-              } catch { /* if the check itself fails, fall back to offering */ }
-            }
-            // SERVED app (Block 60): same bar — don't offer to START a server whose page doesn't actually
-            // serve/render. Start it, fetch the entry, broken/blank-check, stop — symmetric to the static
-            // check above. The agent claiming "fully playable" is NOT enough; verify before offering to run.
-            if (okToOpen && hint.kind === "serve" && typeof session.tools._verifyServedApp === "function") {
-              try {
-                const sv = await session.tools._verifyServedApp();
-                if (sv && sv.ran && sv.problem) {
-                  okToOpen = false;
-                  process.stdout.write(p.yellow(`  ⚠ not starting — the served app isn't working yet:\n`) + p.dim("    " + sv.problem) + "\n" + p.dim("    ask me to fix it, then it'll offer to run.\n"));
-                }
-              } catch { /* check couldn't run (no browser) → fall back to offering */ }
-            }
-            if (okToOpen) await demonstrate(hint);
-            else if (res.stopped) process.stdout.write(p.dim("  (the turn stopped before finishing — the page is likely incomplete; fix the errors above first)\n"));
-          }
+          if (hint) process.stdout.write("\n" + p.cyan(`▶ run ${hint.what} with:  ${hint.cmd}`) + "\n");
         }
       }
       if (session.tools.tasks.length) process.stdout.write("\n" + renderTasks(session.tools.tasks, p) + "\n");
       process.stdout.write(footer({ turns: res.turns, totalTokens: res.totals.totalTokens, cachedTokens: res.totals.cachedTokens, cost: res.totals.cost, model: session.provider.model, status: footerStatus }, p) + "\n\n");
 
-      // NEXT-STEP SUGGESTER (Block 63): when the turn finished CLEANLY (done, not stopped, no open tasks),
-      // propose the single most valuable next thing to build — grounded in a REAL gap the production-structure
-      // standard found in THIS build (never generic, never hallucinated). Offer to do it ([y/N], default NO so
-      // we never auto-spend on extra work); on yes, queue it as the next task. Quiet when nothing's worth it.
-      if (process.stdin.isTTY && res.done && !res.stopped && !(session.tools.tasks || []).some((t) => t.status !== "completed")) {
+      // AUTONOMOUS SELF-IMPROVE (Block 79): on a clean done with no open tasks, AUTOMATICALLY continue to the
+      // single most valuable next improvement — grounded in a REAL structure gap in THIS build — WITHOUT asking
+      // (no y/N). The suggestion EXPANDS into a fresh task_write checklist the agent implements + verifies.
+      // Bounded: the same gap is never auto-applied twice (an un-fillable gap can't loop), and it goes quiet
+      // when there's nothing worth doing or the run didn't finish cleanly.
+      if (res.done && !res.stopped && !(session.tools.tasks || []).some((t) => t.status !== "completed")) {
         try {
           const gameFile = detectGameFile(workdir);
           const next = gameFile ? suggestNextStep(workdir, taskToRun, { fsMod: fs, pathMod: path, gameFile }) : null;
-          if (next) {
-            process.stdout.write(p.cyan("◇ next idea: ") + next.offer + p.dim(`  (${next.reason})`) + "\n");
-            const yes = await prompting(() => new Promise((resolve) => {
-              rl.question(p.bold("  do it now?") + p.dim(" [y/N] "), (a) => resolve(/^\s*y/i.test(a || "")));
-            }));
-            if (yes) { queue.unshift(next.task); }
+          if (next && !autoImproved.has(next.id)) {
+            autoImproved.add(next.id);
+            process.stdout.write(p.cyan("◇ auto-continuing → ") + next.offer + p.dim(`  (${next.reason})`) + "\n");
+            autoTasks.add(next.task);
+            queue.unshift(next.task);   // applied automatically — no prompt
           }
         } catch { /* a suggestion must never break the REPL */ }
       }
