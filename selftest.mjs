@@ -2490,6 +2490,14 @@ console.log("== 68. runUntilDone supervisor — drive a session to completion, n
   // a passing task-check → 'pass'
   const rPass = await runUntilDone(mkV([doneA], { _verifyTaskChecks: () => ({ checked: 1, failures: [] }) }), "build", { maxRounds: 4 });
   ok("verify-on-exit: a passing task-check → verifiedStatus 'pass'", rPass.outcome === "success" && rPass.verifiedStatus === "pass" && rPass.verification.ran.includes("task-checks"));
+  // SOFT verification (Block 75): a game that passed its in-loop gates reports 'soft', not 'unverified'.
+  const rSoft = await runUntilDone(mkV([(t) => { t.length = 0; t.push({ status: "completed", subject: "A" }); return { done: true, verified: null, verifiedBy: ["game-gate", "visual-match"], trace: [] }; }], {}), "build", { maxRounds: 4 });
+  ok("verify-on-exit: in-loop gate passes → 'soft' (not 'unverified')", rSoft.outcome === "success" && rSoft.verifiedStatus === "soft" && rSoft.verifiedBy.includes("game-gate"));
+  // ABORT must NOT run finalVerify (Block 75 fix): a session whose checks would THROW still aborts cleanly.
+  const sAbort = { tools: { tasks: [], _verifyTaskChecks: () => { throw new Error("should not run on abort"); } }, totals: () => ({ cost: 0 }), runTurn: async () => ({ aborted: true, trace: [] }) };
+  const rAbort = await runUntilDone(sAbort, "build", { maxRounds: 4 });
+  ok("verify-on-exit: aborted run does NOT run final checks", rAbort.outcome === "aborted" && rAbort.verification === null);
+
   // QUALITY-TRIGGERED ESCALATION (Block 71): a FAILED verification escalates to strongModel (not just stuck)
   let escalated = false;
   const sEsc = { tools: { tasks: [] }, provider: { model: "cheap/x" }, totals: () => ({ cost: 0 }), runTurn: async () => ({ done: false, verified: false, stopped: "v", trace: [] }) };

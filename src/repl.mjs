@@ -383,8 +383,9 @@ export async function startRepl({ workdir, config, palette } = {}) {
           const vran = (v.ran || []).join(", ");
           const vmsg = rep.verifiedStatus === "pass" ? p.green(`verified ✓${vran ? ` (${vran})` : ""}`)
             : rep.verifiedStatus === "fail" ? p.red(`checks FAILED ✗ — ${(v.failures || []).slice(0, 3).join("; ") || vran}`)
+            : rep.verifiedStatus === "soft" ? p.cyan(`verified by ${(rep.verifiedBy || []).join(", ")} ◑ (no hard check — add a test/check to make it certain)`)
             : p.yellow(`UNVERIFIED ⚠ — no hard check ran${(v.skipped || []).length ? ` (skipped: ${v.skipped.join(", ")})` : ""}`);
-          // quiet on a clean single-round VERIFIED finish; speak up on anything else.
+          // quiet on a clean single-round HARD-VERIFIED finish; speak up on anything else.
           if (rep.outcome === "success" && rep.verifiedStatus === "pass") {
             if (explicitFinish || rep.rounds > 1) process.stdout.write(p.green(`✓ finished — all tasks done in ${rep.rounds} round(s) · $${(rep.cost || 0).toFixed(4)} · `) + vmsg + "\n");
           } else if (rep.outcome === "success") {

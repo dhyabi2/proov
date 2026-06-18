@@ -122,14 +122,23 @@ export async function runUntilDone(session, task, opts = {}) {
   // NO hard check ran — e.g. only the soft, gameable gates, or checks were skipped for a missing toolchain).
   const finish = async (outcome, rounds, res, open, totals, detail) => {
     const rep = report(outcome, rounds, res, open, totals, detail);
+    // Don't run the project's tests/build after an ABORT (Ctrl-C) or a provider ERROR — verifying an
+    // interrupted run is wasteful and can hang (Block 75 fix). Report the status without re-running checks.
     let fv = null;
-    try { fv = await finalVerify(session, res); } catch { fv = null; }
+    if (outcome !== "aborted" && outcome !== "error") {
+      try { fv = await finalVerify(session, res); } catch { fv = null; }
+    }
     rep.verification = fv;
-    rep.verifiedStatus = fv && fv.status === "fail" ? "fail"
+    const soft = (res && Array.isArray(res.verifiedBy)) ? res.verifiedBy : [];
+    // 'pass' = a HARD executable check confirmed it · 'soft' = only heuristic/visual gates verified it ·
+    // 'unverified' = nothing checked it · 'fail' = a hard check failed. Never let a skip read as 'pass'.
+    rep.verifiedStatus = (fv && fv.status === "fail") ? "fail"
       : (fv && fv.status === "pass") ? "pass"
       : (res && res.verified === true) ? "pass"
+      : soft.length ? "soft"
       : "unverified";
     if (rep.verifiedStatus === "fail") rep.verified = false;
+    if (soft.length) rep.verifiedBy = soft;
     return rep;
   };
 

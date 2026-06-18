@@ -705,5 +705,13 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
       : "stopped before finishing";
   }
 
-  return { done, summary, turns, editFailures, trace, aborted, error, stopped, verified, repairs, messages, totals: provider.totals() };
+  // SOFT verification this run (Block 75): which in-loop gates actually verified the build — so a game that
+  // passed its gates isn't mis-reported as "unverified" by the supervisor (which re-runs only HARD checks).
+  // These are heuristic/visual gates (weaker than an executable check), so they're surfaced as 'soft', not 'pass'.
+  const verifiedBy = [];
+  if (done) {
+    if (gameGateDone) verifiedBy.push("game-gate");
+    try { const lm = tools && tools.lastVisualMatch; if (lm && lm.perAsset && lm.allPass) verifiedBy.push("visual-match"); } catch { /* */ }
+  }
+  return { done, summary, turns, editFailures, trace, aborted, error, stopped, verified, verifiedBy, repairs, messages, totals: provider.totals() };
 }
