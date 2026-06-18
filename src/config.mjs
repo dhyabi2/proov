@@ -41,6 +41,9 @@ export const DEFAULTS = {
   // agent codes, deterministically — so the visual-match + beyond-frame gates have a target to enforce
   // (instead of relying on the model to remember to generate one). true = on. Needs imageModel + a key.
   designFirst: true,
+  // CLI bottom status box (Block 82): a pinned terminal footer during a run — live elapsed timer + the task
+  // tree + the current task. true = on (TTY only). Set false to disable if your terminal mis-renders it.
+  liveBox: true,
   // WORKFLOW EVENT EMISSION (Block 76): emit structured, BPMN-step-tagged events so an external monitor can
   // show progress in real time. eventsUrl = HTTP endpoint to POST each event to (the monitor's /ingest);
   // eventsFile = append NDJSON to this path. Either/both; empty = off. Fire-and-forget (never breaks a run).

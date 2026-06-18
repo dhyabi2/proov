@@ -176,28 +176,65 @@ export function stepLine({ tool, args, status = "ok", extra = "", palette }) {
 //   getSummary(info) -> a semantic one-line summary (caller binds it to session/diff state)
 //   afterCommit(info) -> render any extra block (diffs, sub-results, task checklist) after the line
 // Returns { onToolStart, onStep } to hand straight to runTurn.
-export function makeLiveRenderer({ out, palette, isTTY = false, getSummary = () => "", afterCommit = () => {}, getStatus } = {}) {
+export function makeLiveRenderer({ out, palette, isTTY = false, getSummary = () => "", afterCommit = () => {}, getStatus, getTasks = () => [], box = true } = {}) {
   const p = palette;
   let pending = false; // a running line is on screen awaiting overwrite (TTY only)
   const write = (s) => { try { out(s); } catch { /* */ } };
-  // LIVE "thinking" timer during the model call (the slow part — esp. a big create). On a TTY, animate a
-  // spinner + elapsed seconds in place so a long generation never looks frozen/stuck; clear it on response.
   const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-  let thinkTimer = null;
+
+  // ── PINNED BOTTOM STATUS BOX (Block 82, CLI): a live region kept at the bottom of the terminal during a run
+  // — an elapsed timer counting up from the prompt start, the current in-progress task, and the task tree
+  // (✓ done · ◐ current · ☐ pending). All streaming output is routed through `emit`, which erases the box,
+  // writes the line above it, then re-draws the box below — so it stays pinned. TTY-only; degrades to plain
+  // line output otherwise, and any drawing error is swallowed (never corrupts a run).
+  const live = { on: false, t0: 0, thinking: false, model: "", lines: 0, spin: 0 };
+  let boxTimer = null;
+  const useBox = () => isTTY && box && live.on;
+  const cols = () => (process.stdout && process.stdout.columns) || 80;
+  const visLen = (s) => String(s).replace(/\x1b\[[0-9;]*m/g, "").length;
+  const clipVis = (s, n) => { let v = 0, o = ""; for (let i = 0; i < s.length; i++) { const ch = s[i]; if (ch === "\x1b") { const j = s.indexOf("m", i); o += s.slice(i, j + 1); i = j; continue; } if (v >= n) break; o += ch; v++; } return o; };
+
+  function boxLines() {
+    const tasks = (typeof getTasks === "function" ? (getTasks() || []) : []);
+    const done = tasks.filter((t) => t.status === "completed").length;
+    const cur = tasks.find((t) => t.status === "in_progress");
+    const s = Math.max(0, Math.floor((Date.now() - live.t0) / 1000));
+    const mmss = String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+    const spin = live.thinking ? " " + p.cyan(SPIN[live.spin % SPIN.length]) : "";
+    const curTxt = cur ? cur.subject : (live.thinking ? "thinking" + (live.model ? " · " + String(live.model).split("/").pop() : "") : (tasks.length ? "(tasks complete)" : "working"));
+    const head = p.dim("─".repeat(Math.min(cols(), 64)));
+    const line1 = p.cyan("⏱ " + mmss) + spin + p.dim(" · ") + p.bold("▶ " + clipVis(curTxt, Math.max(10, cols() - 28))) + (tasks.length ? p.dim("  " + done + "/" + tasks.length) : "");
+    if (!tasks.length) return [head, line1];
+    const chips = tasks.map((t) => { const ic = t.status === "completed" ? "✓" : t.status === "in_progress" ? "◐" : "☐"; const txt = ic + " " + t.subject; return t.status === "completed" ? p.green(txt) : t.status === "in_progress" ? p.cyan(txt) : p.dim(txt); });
+    let acc = "", v = 0; const max = cols() - 2;
+    for (const c of chips) { const cl = visLen(c) + 2; if (v + cl > max) { acc += p.dim(" …"); break; } acc += (acc ? "  " : "") + c; v += cl; }
+    return [head, line1, acc];
+  }
+  function erase() { if (!live.lines) return; try { write("\r"); if (live.lines > 1) write("\x1b[" + (live.lines - 1) + "A"); write("\x1b[0J"); } catch { /* */ } live.lines = 0; }
+  function draw() { if (!useBox()) return; try { const ls = boxLines(); write(ls.join("\n")); live.lines = ls.length; } catch { /* */ } }
+  // route a chunk of line output ABOVE the pinned box.
+  const emit = (s) => { if (useBox()) { erase(); write(s); draw(); } else { write(s); } };
+
   return {
-    onThinking(active, model) {
-      if (!isTTY) return;
-      if (active) {
-        const t0 = Date.now(); let i = 0;
-        const tick = () => { const s = ((Date.now() - t0) / 1000).toFixed(0); write("\r\x1b[2K  " + p.cyan(SPIN[i++ % SPIN.length]) + " " + p.dim("thinking… " + s + "s" + (model ? " · " + String(model).split("/").pop() : ""))); };
-        tick(); thinkTimer = setInterval(tick, 200);
-      } else if (thinkTimer) { clearInterval(thinkTimer); thinkTimer = null; write("\r\x1b[2K"); }
+    print: emit,   // route in-run line output ABOVE the pinned box (round updates, banners, etc.)
+    begin(task) {
+      if (!isTTY || !box) return;
+      live.on = true; live.t0 = Date.now(); live.thinking = false; live.lines = 0; live.model = "";
+      draw();
+      if (boxTimer) clearInterval(boxTimer);
+      boxTimer = setInterval(() => { if (!useBox()) return; live.spin++; erase(); draw(); }, 300);
     },
+    end() {
+      live.thinking = false;
+      if (boxTimer) { clearInterval(boxTimer); boxTimer = null; }
+      erase(); live.on = false;
+    },
+    onThinking(active, model) { if (!isTTY) return; live.thinking = !!active; live.model = model || live.model; if (useBox()) { erase(); draw(); } },
     onToolStart({ tool, args, reasoning }) {
       if (tool === "done") return;
       const why = reasoningLine(reasoning, p);
-      if (why) write(why + "\n");
-      if (isTTY) { write(runningLine({ tool, args, palette: p }) + "\n"); pending = true; }
+      if (why) emit(why + "\n");
+      if (isTTY) { emit(runningLine({ tool, args, palette: p }) + "\n"); pending = true; }
     },
     onStep(info) {
       const { tool, args, result, denied, elapsedMs } = info;
@@ -206,8 +243,8 @@ export function makeLiveRenderer({ out, palette, isTTY = false, getSummary = () 
         || (denied ? "skip" : result?.ok === false ? "fail" : "ok");
       let summary = ""; try { summary = getSummary(info) || ""; } catch { /* */ }
       const line = committedLine({ tool, args, status, summary, elapsedMs, palette: p });
-      if (pending) { write("\x1b[1A\x1b[2K" + line + "\n"); pending = false; } // overwrite the running line
-      else write(line + "\n");
+      if (pending) { emit("\x1b[1A\x1b[2K" + line + "\n"); pending = false; } // overwrite the running line (box erased first)
+      else emit(line + "\n");
       try { afterCommit(info); } catch { /* */ }
     },
   };

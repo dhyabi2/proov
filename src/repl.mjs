@@ -298,7 +298,7 @@ export async function startRepl({ workdir, config, palette } = {}) {
       for (const dd of session.lastDiffs) { const d = renderDiff(dd.before, dd.after, { color: p.enabled, path: dd.path, context: 2 }); if (d) w(d.split("\n").map(l => "    " + l).join("\n") + "\n"); }
     }
   };
-  const _live = makeLiveRenderer({ out: w, palette: p, isTTY: !!process.stdout.isTTY, getSummary, afterCommit, getStatus });
+  const _live = makeLiveRenderer({ out: w, palette: p, isTTY: !!process.stdout.isTTY, getSummary, afterCommit, getStatus, getTasks: () => session.tools.tasks, box: config.liveBox !== false });
   const onStep = _live.onStep;
   const onToolStart = _live.onToolStart;
   const onThinking = _live.onThinking;
@@ -367,18 +367,19 @@ export async function startRepl({ workdir, config, palette } = {}) {
       createdThisTurn = [];
       currentAbort = new AbortController();
       let res;
+      _live.begin(taskToRun);   // pin the bottom status box (timer + task tree + current task) for this run
       try {
         if (untilDone) {
           // Keep continuing the SAME thread until done/verified, or a budget / no-progress stop. The banner
           // shows only for an explicit /finish; otherwise continuation is quiet until it actually loops.
           const maxRounds = config.untilDoneMaxRounds || 12;
           const costCap = config.untilDoneCostCap > 0 ? config.untilDoneCostCap : Infinity;
-          if (explicitFinish) process.stdout.write(p.dim(`▶ finishing — up to ${maxRounds} rounds${costCap !== Infinity ? `, $${costCap} cap` : ""} (Ctrl-C to stop)\n`));
+          if (explicitFinish) _live.print(p.dim(`▶ finishing — up to ${maxRounds} rounds${costCap !== Infinity ? `, $${costCap} cap` : ""} (Ctrl-C to stop)\n`));
           const rep = await session.runUntilDone(taskToRun, {
             maxRounds, costCap,
             turnOpts: { onStep, onToolStart, onThinking, beforeTool, signal: currentAbort.signal },
             onRound: ({ round, open, cost }) => {
-              if (round > 1) process.stdout.write(p.dim(`  ↻ continuing (round ${round}) · ${open} task(s) left · $${(cost || 0).toFixed(4)}\n`));
+              if (round > 1) _live.print(p.dim(`  ↻ continuing (round ${round}) · ${open} task(s) left · $${(cost || 0).toFixed(4)}\n`));
             },
           });
           res = rep.last || {};
@@ -401,11 +402,13 @@ export async function startRepl({ workdir, config, palette } = {}) {
           res = await session.runTurn(taskToRun, { onStep, onToolStart, onThinking, beforeTool, signal: currentAbort.signal });
         }
       } catch (e) {
+        _live.end();
         process.stdout.write(p.red(`error: ${e.message}\n`));
         currentAbort = null;
         safePrompt();
         continue;
       }
+      _live.end();   // unpin the bottom box before printing results
       currentAbort = null;
 
       // Session continuity (Block 25): record a journal handoff so the NEXT session can resume.

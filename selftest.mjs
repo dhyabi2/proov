@@ -1745,6 +1745,21 @@ console.log("== 44. live progress UX — reasoning, semantic summaries, in-place
   tlive.onToolStart({ tool: "run_command", args: { command: "ls" }, reasoning: "" });
   tlive.onStep({ tool: "run_command", args: { command: "ls" }, result: { ok: true }, elapsedMs: 10 });
   ok("live (TTY): prints a running line, then overwrites it in place on commit", /●/.test(tlines.join("")) && /\x1b\[1A\x1b\[2K/.test(tlines.join("")));
+
+  // BOTTOM STATUS BOX (Block 82): begin() pins a box (elapsed timer + current task + task tree); end() clears it.
+  const tasks82 = [{ subject: "Plan", status: "completed" }, { subject: "Build engine", status: "in_progress" }, { subject: "HUD", status: "pending" }];
+  const blines = [];
+  const blive = makeLiveRenderer({ out: (s) => blines.push(s), palette: pl, isTTY: true, getTasks: () => tasks82, box: true });
+  blive.begin("make a game");
+  ok("live-box: begin draws the box (timer + current task + full tree)", /⏱/.test(blines.join("")) && /Build engine/.test(blines.join("")) && /Plan/.test(blines.join("")) && /HUD/.test(blines.join("")));
+  blines.length = 0;
+  blive.onStep({ tool: "edit_file", args: { path: "g.js" }, result: { ok: true }, elapsedMs: 5 });
+  ok("live-box: a step writes its line AND keeps the box pinned (erase+redraw)", /g\.js/.test(blines.join("")) && /\x1b\[0J/.test(blines.join("")) && /⏱/.test(blines.join("")));
+  blines.length = 0; blive.end();
+  ok("live-box: end clears the box", /\x1b\[0J/.test(blines.join("")));
+  const nb = []; const nblive = makeLiveRenderer({ out: (s) => nb.push(s), palette: pl, isTTY: true, getTasks: () => tasks82, box: false });
+  nblive.begin("x"); nblive.onStep({ tool: "read_file", args: { path: "a" }, result: { ok: true } }); nblive.end();
+  ok("live-box: box:false disables it (no timer box, plain output)", !/⏱/.test(nb.join("")));
 }
 
 console.log("== 45. continuity + anti-stuck — resume between sessions, escape failing loops (Block 25) ==");
