@@ -41,6 +41,11 @@ export const DEFAULTS = {
   // agent codes, deterministically — so the visual-match + beyond-frame gates have a target to enforce
   // (instead of relying on the model to remember to generate one). true = on. Needs imageModel + a key.
   designFirst: true,
+  // WORKFLOW EVENT EMISSION (Block 76): emit structured, BPMN-step-tagged events so an external monitor can
+  // show progress in real time. eventsUrl = HTTP endpoint to POST each event to (the monitor's /ingest);
+  // eventsFile = append NDJSON to this path. Either/both; empty = off. Fire-and-forget (never breaks a run).
+  eventsUrl: "",
+  eventsFile: "",
   // Per-request timeout (ms) for the model call. SLOW or reasoning models (e.g. qwen3-coder-next) and big
   // create turns easily exceed a tight timeout — too short → the request is aborted mid-generation and
   // RETRIED (re-sending the whole context). 120s default gives slow models room; raise for very slow ones.
@@ -83,6 +88,8 @@ function fromEnv(env) {
   if (v("EDIT_MODEL")) out.editModel = v("EDIT_MODEL");
   if (v("VERIFY_MODEL")) out.verifyModel = v("VERIFY_MODEL");
   if (v("IMAGE_MODEL")) out.imageModel = v("IMAGE_MODEL");
+  if (v("EVENTS_URL")) out.eventsUrl = v("EVENTS_URL");
+  if (v("EVENTS_FILE")) out.eventsFile = v("EVENTS_FILE");
   if (env.OPENROUTER_API_KEY) out.apiKey = env.OPENROUTER_API_KEY;
   if (v("API_KEY")) out.apiKey = v("API_KEY");
   if (v("BASE_URL")) out.baseUrl = v("BASE_URL");

@@ -106,6 +106,8 @@ export async function runUntilDone(session, task, opts = {}) {
   const turnOpts = opts.turnOpts || {};
   const onRound = typeof opts.onRound === "function" ? opts.onRound : () => {};
   const strongModel = opts.strongModel || "";   // used ONLY on a stuck round (the ~1% critical case)
+  const emit = typeof opts.emit === "function" ? opts.emit : () => {};   // workflow events for a monitor (Block 76)
+  emit({ type: "run_start", task: String(task).slice(0, 160) });
 
   const openOf = () => (session.tools && Array.isArray(session.tools.tasks)) ? session.tools.tasks.filter((t) => t.status !== "completed") : [];
   const doneCountOf = () => (session.tools && Array.isArray(session.tools.tasks)) ? session.tools.tasks.filter((t) => t.status === "completed").length : 0;
@@ -139,6 +141,7 @@ export async function runUntilDone(session, task, opts = {}) {
       : "unverified";
     if (rep.verifiedStatus === "fail") rep.verified = false;
     if (soft.length) rep.verifiedBy = soft;
+    emit({ type: outcome === "success" ? "done" : "stop", outcome, status: rep.verifiedStatus, rounds, detail: detail || null });
     return rep;
   };
 
@@ -149,6 +152,7 @@ export async function runUntilDone(session, task, opts = {}) {
     const open = openOf();
     const totals = totalsOf();
     onRound({ round: rounds, res, open: open.length, cost: totals.cost, noProgress });
+    emit({ type: "round", n: rounds, open: open.length, cost: totals.cost });
 
     if (res.aborted) return await finish("aborted", rounds, res, open, totals);
     if (res.error) return await finish("error", rounds, res, open, totals, res.error);

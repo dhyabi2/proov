@@ -2866,6 +2866,19 @@ console.log("== 68o. plan-first gate — decompose a substantial task before bui
   ok("plan-first: a trivial task → no nudge", !r3.trace.some((s) => s.planNudge));
 }
 
+console.log("== 68p. workflow events — emit BPMN-step-tagged events to a sink (Block 76) ==");
+{
+  const { stepFor, makeEmitter } = await import("./src/events.mjs");
+  ok("events: stepFor maps tool→exec, done→gwDone, gate→g*, verify→fv, status→end", stepFor({ type: "tool_result", tool: "edit_file" }) === "exec" && stepFor({ type: "tool_start", tool: "done" }) === "gwDone" && stepFor({ type: "gate", gate: "task-check" }) === "g2" && stepFor({ type: "gate", gate: "plan" }) === "gwPlan" && stepFor({ type: "verify" }) === "fv" && stepFor({ type: "done", status: "unverified" }) === "unvEnd" && stepFor({ type: "done", status: "soft" }) === "softEnd");
+  ok("events: no sink → disabled no-op", makeEmitter({}).enabled === false);
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "proov-ev-")), "ev.ndjson");
+  const em = makeEmitter({ eventsFile: f, runId: "t1" });
+  ok("events: a file sink is enabled", em.enabled === true);
+  em.emit({ type: "round", n: 1 }); em.emit({ type: "tool_start", tool: "edit_file" }); em.emit({ type: "done", status: "pass" });
+  const lines = fs.readFileSync(f, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  ok("events: file sink appends NDJSON with runId/seq/step", lines.length === 3 && lines[0].runId === "t1" && lines[0].seq === 0 && lines[1].step === "exec" && lines[2].step === "succ");
+}
+
 console.log("== 69. animation-driver gate — a static 3D character is rejected (Block 48) ==");
 {
   const { animationDriverViolation } = await import("./src/structure.mjs");

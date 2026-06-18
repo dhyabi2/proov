@@ -213,7 +213,7 @@ export function reasoningProse(text) {
   return s.slice(0, i).replace(/```\w*/g, "").replace(/\s+/g, " ").trim();
 }
 
-export async function runLoop({ provider, tools, toolMap, systemPrompt, task, maxSteps = Infinity, onStep, onToolStart, onThinking, beforeTool, seedMessages, signal, verify, maxRepairs = 3, bridge, editModel, compress, verifyModel, designFirst = true }) {
+export async function runLoop({ provider, tools, toolMap, systemPrompt, task, maxSteps = Infinity, onStep, onToolStart, onThinking, beforeTool, seedMessages, signal, verify, maxRepairs = 3, bridge, editModel, compress, verifyModel, designFirst = true, emit = () => {} }) {
   // DUAL-MODEL ROUTING (optional): a CREATOR model (provider.model) builds/creates; an EDITOR model
   // (editModel) handles editing/bug-fixing. We pick per turn from the most recent mutation: while the
   // agent is creating files it stays on the creator; once it edits existing code it uses the editor.
@@ -344,6 +344,7 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
         doneTaskNudged = true; noProgress = 0;
         messages.push({ role: "user", content: `You called done, but ${openTasks.length} task${openTasks.length === 1 ? " is" : "s are"} still NOT completed on your checklist:\n${openTasks.slice(0, 8).map((t) => "  ☐ " + t.subject).join("\n")}\nDo NOT declare done with unfinished tasks. FINISH each one for real and VERIFY it (a game: see_page/play_levels/autoplay), then mark it completed with task_write — only THEN call done. If a listed task is genuinely already done, mark it completed first.` });
         trace.push({ step, doneTaskNudge: openTasks.length });
+        emit({ type: "gate", gate: "tasks", ok: false, detail: ` open task(s)` });
         continue;
       }
       // PER-TASK ACCEPTANCE GATE (Block 68, from DTP — "never stack work on an unmet criterion"): a task can
@@ -358,6 +359,7 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
           const punch = tc.failures.slice(0, 6).map((f) => `  ✗ ${f.subject}: ${f.reason}`).join("\n");
           messages.push({ role: "user", content: `You called done, but ${tc.failures.length} task acceptance check${tc.failures.length === 1 ? "" : "s"} FAIL:\n${punch}\nA task's \`check\` is its ground-truth acceptance criterion — fix the code so each check passes (exit 0), then call done.` });
           trace.push({ step, taskCheckGate: tc.failures.length });
+          emit({ type: "gate", gate: "task-check", ok: false, detail: ` failing check(s)` });
           continue;
         }
       }
@@ -375,6 +377,7 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
           const punch = tf.misses.slice(0, 6).map((m) => `  ✗ "${m.entity}" — searched for ${m.stems.slice(0, 3).map((s) => "`" + s + "`").join(", ")}; found in NO code file`).join("\n");
           messages.push({ role: "user", content: `You called done, but the prompt explicitly asked you to USE something your code never references:\n${punch}\n(checked ${tf.files} code file${tf.files === 1 ? "" : "s"}, excluding docs + .proov metadata.)\nThis usually means you built a generic solution and skipped the actual requirement. Go ACTUALLY use it — import or vendor it, call its API, wire it into the program — then verify and call done. If you addressed it under a different name, make that reference explicit in the code (an import or a comment naming it) so it's verifiable.` });
           trace.push({ step, taskFidelity: { misses: tf.misses.map((m) => m.entity), files: tf.files } });
+          emit({ type: "gate", gate: "fidelity", ok: false, detail: tf.misses.map((m) => m.entity).join(", ") });
           continue;
         }
       }
@@ -400,13 +403,14 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
               const gf = detectGameFile(tools.workdir);
               let entry = ""; try { entry = gf ? fs.readFileSync(path.join(tools.workdir, gf), "utf8") : ""; } catch { /* */ }
               const bf = beyondFrameViolation(bundleGameSource(entry, tools.workdir, fs, path), task);
-              if (bf) { problem = bf; trace.push({ step, beyondFrame: 1 }); }
+              if (bf) { problem = bf; trace.push({ step, beyondFrame: 1 }); emit({ type: "gate", gate: "beyond", ok: false }); }
             } catch { /* couldn't read → don't block */ }
           }
           if (problem) {
             visualMatchTries++; noProgress = 0;
             messages.push({ role: "user", content: `You called done, but the visual match to the reference isn't met: ${problem}` });
             trace.push({ step, visualMatchGate: clip(problem, 80) });
+            emit({ type: "gate", gate: "visual", ok: false, detail: clip(problem, 100) });
             continue;
           }
         }
@@ -443,6 +447,7 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
               noProgress = 0;
               messages.push({ role: "user", content: `You called done, but the SERVED app isn't finished to the bar: ${sv.problem}\nFix it for real, then restart and RE-VERIFY over the URL (start_server, see_page {url}, http_request), THEN call done.` });
               trace.push({ step, servedGate: clip(sv.problem, 80) });
+              emit({ type: "gate", gate: "served", ok: false, detail: clip(sv.problem, 100) });
               continue;
             }
           }
@@ -524,6 +529,7 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
             noProgress = 0;
             messages.push({ role: "user", content: `You called done, but the GAME isn't finished to the bar: ${problem}\nFix it for real (recognizable characters not boxes, real input + render loop, and it must actually play), verify again with see_page/autoplay/art_review, THEN call done. The DEFAULT is an advanced, complete game — do not declare a boxes/basic prototype done.` });
             trace.push({ step, gameGate: clip(problem, 80) });
+            emit({ type: "gate", gate: "game", ok: false, detail: clip(problem, 100) });
             continue;
           }
         }
@@ -536,6 +542,7 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
         try { v = await effectiveVerify({ messages, summary }); }
         catch (e) { v = { ok: false, feedback: `the verification step itself errored: ${e.message}` }; }
         trace.push({ step, tool: "verify", ok: !!v.ok, repair: repairs });
+        emit({ type: "verify", ok: !!v.ok, detail: v.ok ? "passed" : clip(v.feedback || "failed", 120) });
         if (onStep) onStep({ step, tool: "verify", args: {}, result: { ok: !!v.ok, note: v.ok ? "passed" : clip(v.feedback || "failed", 200) } });
         if (v.ok) { verified = true; done = true; trace.push({ step, tool: "done", summary }); if (bridge) bridge.emit("done", { summary, verified: true }); break; }
         verified = false;
@@ -552,6 +559,7 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
       }
       done = true;
       trace.push({ step, tool: "done", summary });
+      emit({ type: "done", summary: clip(summary, 120) });
       if (bridge) bridge.emit("done", { summary });
       break;
     }
@@ -572,6 +580,7 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
       planNudged = true;
       messages.push({ role: "user", content: `Before you start building: this is a multi-part task — DECOMPOSE it first. Call task_write with a concrete checklist (one step per deliverable), give each mechanically-testable step a 'check' (a shell command that exits 0 when it's truly done), then build to the plan and mark steps completed as you verify them. Planning first prevents stacking work on the wrong foundation.` });
       trace.push({ step, planNudge: 1 });
+      emit({ type: "gate", gate: "plan", ok: false });
       continue;
     }
 
@@ -600,6 +609,7 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
     // possibly slow tool, and time how long it takes.
     const reasoning = reasoningProse(resp.text);
     if (onToolStart) { try { onToolStart({ step, tool: call.tool, args: call.args || {}, reasoning }); } catch { /* UI must never break the run */ } }
+    emit({ type: "tool_start", tool: call.tool, turn: turns, reason: clip(reasoning || "", 120) });
     let result; const _t0 = Date.now();
     try { result = await fn(call.args || {}); }
     catch (e) { result = { ok: false, error: e.message }; }
@@ -613,6 +623,7 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
     trace.push({ step, tool: call.tool, ok: result?.ok, tier: result?.tier });
     if (onStep) onStep({ step, tool: call.tool, args: call.args, result, elapsedMs, reasoning });
     if (bridge) bridge.emit("result", { tool: call.tool, ok: result?.ok !== false, note: clip(result?.note || result?.error || "", 300), ms: elapsedMs });
+    emit({ type: "tool_result", tool: call.tool, ok: result?.ok !== false, step: undefined, note: clip(result?.note || result?.error || "", 140), turn: turns, ms: elapsedMs });
 
     // SCREENSHOT-THRASH guard (Block 59): completing a task = real progress → reset the counter. A visual
     // check (a screenshot / art_review / compare) with NO task completed since the last one accumulates; past

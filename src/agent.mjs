@@ -9,6 +9,7 @@ import path from "node:path";
 import { Provider } from "./provider.mjs";
 import { Tools } from "./tools.mjs";
 import { runLoop } from "./loop.mjs";
+import { makeEmitter } from "./events.mjs";
 import { runUntilDone } from "./supervisor.mjs";
 import { connectAll, closeAll, mcpPromptSection } from "./mcp.mjs";
 import { detectStyle, styleBrief } from "./style.mjs";
@@ -787,6 +788,9 @@ export class Session {
     this.provider = new Provider(opts);
     // fold web_search's separate OpenRouter spend into the session provider's accounting.
     this.tools = new Tools(workdir, { ...opts, provider: this.provider, onExternalUsage: (u) => this.provider.recordExternalUsage(u) });
+    // Workflow event emitter (Block 76): emits BPMN-step-tagged events to a sink for a real-time monitor.
+    this.emitter = makeEmitter({ eventsUrl: opts.eventsUrl, eventsFile: opts.eventsFile, runId: opts.runId });
+    if (this.emitter.enabled) this.emitter.emit({ type: "session", workdir: this.workdir, model: this.provider.model });
     this.messages = null; // seeded on first run; persists across turns
     this.maxSteps = opts.maxSteps ?? Infinity;
     this.editModel = opts.editModel || "";   // optional 2nd model for editing/bug-fixing (creator = model)
@@ -945,7 +949,7 @@ export class Session {
   // Drive this session to GENUINE completion (Block 46): keep continuing the SAME thread — with a targeted
   // continuation each round, not a bare "continue" — until every checklist task is done and the turn wasn't
   // pushed back, or a budget/no-progress stop. Returns a structured final report. See supervisor.mjs.
-  async runUntilDone(task, opts = {}) { return runUntilDone(this, task, { strongModel: this.strongModel, ...opts }); }
+  async runUntilDone(task, opts = {}) { return runUntilDone(this, task, { strongModel: this.strongModel, emit: this.emitter.emit, ...opts }); }
 
   // Run ONE user turn against the persistent thread. opts: { onStep, beforeStep, signal, verify }.
   async runTurn(task, { onStep, onToolStart, onThinking, beforeTool, signal, verify, maxRepairs, bridge } = {}) {
@@ -969,6 +973,7 @@ export class Session {
       maxRepairs,
       bridge,
       designFirst: this.opts.designFirst,
+      emit: this.emitter.emit,
     });
     this.messages = res.messages; // persist the thread for the next turn
     return res;
