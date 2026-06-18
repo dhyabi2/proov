@@ -16,3 +16,6 @@ bench/results-livecodebench.json
 
 # stray local test renders
 flatgame.*
+
+# vendored upstream clones for security review (not part of this repo)
+/audit/

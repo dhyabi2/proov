@@ -1,0 +1,243 @@
+    // Randomized property harness: limit-order vault solvency.
+    //
+    // Models a single tick with `zero_for_one == true` orders (owners
+    // deposit token0, expect token1). Matching swaps run the opposite
+    // direction (one_for_zero): the swapper deposits token1 and removes
+    // token0. We track both vaults as running balances and assert neither
+    // can ever go negative. A negative vault == the subsystem paid out
+    // more than was deposited == direct theft of pooled funds.
+    //
+    //   vault0 (token0): += owner open/increase
+    //                    -= swapper takes on match (amount_out)
+    //                    -= owner real_decrease_amount
+    //   vault1 (token1): += swapper pays on match (amount_in)
+    //                    -= owner settled output (settle / decrease)
+    //
+    // fee_rate is held at 0 so amount_in/amount_out are pure price
+    // conversions (no separate fee vault to model). This isolates the
+    // rounding/phase accounting, which is where a solvency break lives.
+    // ===================================================================
+    use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
+
+    fn run_solvency_episode(seed: u64, tick: i32) -> std::result::Result<(), String> {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let z4o = true; // limit orders are zero_for_one
+        let mut ts = create_mock_tick_state(tick, 0, 0, 0);
+        let mut orders: Vec<LimitOrderState> = Vec::new();
+
+        let mut vault0: i128 = 0; // token0 (owner input)
+        let mut vault1: i128 = 0; // token1 (owner output)
+        let mut log: Vec<String> = Vec::new();
+
+        let steps = rng.gen_range(20..60);
+        for _ in 0..steps {
+            match rng.gen_range(0..4) {
+                // open a new order in the current (open) cohort
+                0 => {
+                    let amount = rng.gen_range(1u64..10_000);
+                    // skip orders whose price-converted output rounds to 0 (open would reject)
+                    if TickState::get_limit_order_output(amount, tick, z4o).unwrap_or(0) == 0 {
+                        continue;
+                    }
+                    let order = open_order(amount, z4o, ts.order_phase, &mut ts);
+                    vault0 += amount as i128;
+                    orders.push(order);
+                    log.push(format!("open {}", amount));
+                }
+                // increase an existing same-cohort order
+                1 if !orders.is_empty() => {
+                    let i = rng.gen_range(0..orders.len());
+                    let amount = rng.gen_range(1u64..5_000);
+                    if orders[i].increase_amount(&mut ts, amount).is_ok() {
+                        vault0 += amount as i128;
+                        log.push(format!("increase[{}] {}", i, amount));
+                    }
+                }
+                // a swap matches against the resting orders
+                2 => {
+                    let swap_amount = rng.gen_range(1u64..15_000);
+                    let is_base_input = rng.gen_bool(0.5);
+                    let fee_on_input = rng.gen_bool(0.5);
+                    // realistic CLMM trade fee rates (denominator = 1e6): 0..1%
+                    let fee_rate = *[0u32, 100, 500, 2500, 10000].choose(&mut rng).unwrap();
+                    if let Ok(r) =
+                        ts.match_limit_order(swap_amount, !z4o, is_base_input, fee_rate, fee_on_input)
+                    {
+                        // Physical vault accounting:
+                        // - swapper removes net token0 (amount_out is already post-fee
+                        //   when fee_on_output; the output-token fee stays in vault0).
+                        // - swapper deposits amount_in token1; when fee is on input the
+                        //   token1 fee also physically lands in the vault.
+                        vault0 -= r.amount_out as i128;
+                        vault1 += r.amount_in as i128;
+                        if fee_on_input {
+                            vault1 += r.amm_fee_amount as i128;
+                        }
+                        log.push(format!(
+                            "match {} base_input={} fee_rate={} fee_on_input={} -> in={} out={} fee={}",
+                            swap_amount, is_base_input, fee_rate, fee_on_input,
+                            r.amount_in, r.amount_out, r.amm_fee_amount
+                        ));
+                    }
+                }
+                // a random owner settles or decreases
+                _ if !orders.is_empty() => {
+                    let i = rng.gen_range(0..orders.len());
+                    if rng.gen_bool(0.5) {
+                        if let Ok(out) = orders[i].settle_filled_order(&ts) {
+                            vault1 -= out as i128;
+                            log.push(format!("settle[{}] -> {}", i, out));
+                        }
+                    } else {
+                        let amount = rng.gen_range(1u64..12_000);
+                        if let Ok(res) = orders[i].decrease_amount(&mut ts, amount) {
+                            vault1 -= res.settled_output_amount as i128;
+                            vault0 -= res.real_decrease_amount as i128;
+                            log.push(format!(
+                                "decrease[{}] {} -> settled={} returned={}",
+                                i, amount, res.settled_output_amount, res.real_decrease_amount
+                            ));
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            if vault0 < 0 || vault1 < 0 {
+                return Err(format!(
+                    "INSOLVENCY seed={} tick={} vault0={} vault1={}\n  trace:\n   {}",
+                    seed,
+                    tick,
+                    vault0,
+                    vault1,
+                    log.join("\n   ")
+                ));
+            }
+        }
+
+        // Final drain: everyone settles and fully decreases. Vaults must still be >= 0.
+        for (i, o) in orders.iter_mut().enumerate() {
+            if let Ok(out) = o.settle_filled_order(&ts) {
+                vault1 -= out as i128;
+            }
+            if let Ok(res) = o.decrease_amount(&mut ts, u64::MAX) {
+                vault1 -= res.settled_output_amount as i128;
+                vault0 -= res.real_decrease_amount as i128;
+            }
+            if vault0 < 0 || vault1 < 0 {
+                return Err(format!(
+                    "INSOLVENCY-ON-DRAIN seed={} tick={} order={} vault0={} vault1={}\n  trace:\n   {}",
+                    seed, tick, i, vault0, vault1, log.join("\n   ")
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn randomized_limit_order_solvency_property() {
+        let ticks = [-5000i32, -1000, -100, 0, 1, 100, 1000, 5000, 23028];
+        let mut episodes = 0u64;
+        for &tick in ticks.iter() {
+            for seed in 0..4000u64 {
+                episodes += 1;
+                if let Err(msg) = run_solvency_episode(seed, tick) {
+                    panic!("\n{}\n", msg);
+                }
+            }
+        }
+        println!(
+            "solvency property held across {} randomized episodes",
+            episodes
+        );
+    }
+
+    // Dust-stress variant: many orders of size 1..4 and tiny matches, so every
+    // fill rounds and the per-order floor error is maximal. This is the regime
+    // where cumulative over-crediting (theft) would first appear, if it can.
+    fn run_dust_episode(seed: u64, tick: i32) -> std::result::Result<(), String> {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let z4o = true;
+        let mut ts = create_mock_tick_state(tick, 0, 0, 0);
+        let mut orders: Vec<LimitOrderState> = Vec::new();
+        let mut vault0: i128 = 0;
+        let mut vault1: i128 = 0;
+        let mut log: Vec<String> = Vec::new();
+
+        for _ in 0..rng.gen_range(30..80) {
+            match rng.gen_range(0..4) {
+                0 => {
+                    let amount = rng.gen_range(1u64..5);
+                    if TickState::get_limit_order_output(amount, tick, z4o).unwrap_or(0) == 0 {
+                        continue;
+                    }
+                    let order = open_order(amount, z4o, ts.order_phase, &mut ts);
+                    vault0 += amount as i128;
+                    orders.push(order);
+                    log.push(format!("open {}", amount));
+                }
+                1 => {
+                    let swap_amount = rng.gen_range(1u64..6);
+                    if let Ok(r) = ts.match_limit_order(swap_amount, !z4o, rng.gen_bool(0.5), 0, true)
+                    {
+                        vault0 -= r.amount_out as i128;
+                        vault1 += r.amount_in as i128;
+                        log.push(format!("match {} -> in={} out={}", swap_amount, r.amount_in, r.amount_out));
+                    }
+                }
+                2 if !orders.is_empty() => {
+                    let i = rng.gen_range(0..orders.len());
+                    if let Ok(out) = orders[i].settle_filled_order(&ts) {
+                        vault1 -= out as i128;
+                        log.push(format!("settle[{}] -> {}", i, out));
+                    }
+                }
+                _ if !orders.is_empty() => {
+                    let i = rng.gen_range(0..orders.len());
+                    if let Ok(res) = orders[i].decrease_amount(&mut ts, rng.gen_range(1u64..5)) {
+                        vault1 -= res.settled_output_amount as i128;
+                        vault0 -= res.real_decrease_amount as i128;
+                        log.push(format!("decrease[{}] -> settled={} returned={}", i, res.settled_output_amount, res.real_decrease_amount));
+                    }
+                }
+                _ => {}
+            }
+            if vault0 < 0 || vault1 < 0 {
+                return Err(format!(
+                    "INSOLVENCY seed={} tick={} vault0={} vault1={}\n  trace:\n   {}",
+                    seed, tick, vault0, vault1, log.join("\n   ")
+                ));
+            }
+        }
+        for o in orders.iter_mut() {
+            if let Ok(out) = o.settle_filled_order(&ts) {
+                vault1 -= out as i128;
+            }
+            if let Ok(res) = o.decrease_amount(&mut ts, u64::MAX) {
+                vault1 -= res.settled_output_amount as i128;
+                vault0 -= res.real_decrease_amount as i128;
+            }
+            if vault0 < 0 || vault1 < 0 {
+                return Err(format!(
+                    "INSOLVENCY-ON-DRAIN seed={} tick={} vault0={} vault1={}\n  trace:\n   {}",
+                    seed, tick, vault0, vault1, log.join("\n   ")
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn randomized_limit_order_dust_solvency_property() {
+        let ticks = [0i32, 1, 7, 100, 1000, 23028];
+        let mut episodes = 0u64;
+        for &tick in ticks.iter() {
+            for seed in 0..8000u64 {
+                episodes += 1;
+                if let Err(msg) = run_dust_episode(seed, tick) {
+                    panic!("\n{}\n", msg);
+                }
+            }
+        }
+        println!("dust solvency property held across {} episodes", episodes);
+    }
