@@ -177,6 +177,45 @@ export async function visionChecklistGame(provider, model, task, dataUrl, signal
   return { items: items.map((t) => ({ item: t, present: !missing.includes(t) })), missing, total: items.length, present: items.length - missing.length, votes: rounds };
 }
 
+// VISION DESIGN REVIEW (Block 86) — the honest answer to "are these DESIGNED/PAINTED assets, or flat placeholder
+// boxes?", handed to a VISION model (verifyModel defaults to a vision-capable model, independent of the coding
+// model — so it works even when the coder is a code-only model). The presence checklist asks "is X there?"; this
+// asks "is X real ART or a programmer-art box?" — the look/design/paint judgment the user actually cares about.
+// One strict pass names the placeholder assets; a potential FAILURE is then confirmed by MAJORITY VOTE so one
+// flaky verdict can't false-fail a real build. Returns { placeholders:[name…], total, votes } or null.
+export async function visionDesignReview(provider, model, task, dataUrl, signal, votes = 3) {
+  if (!provider || typeof provider.chat !== "function" || !model || !dataUrl) return null;
+  const ask = async (prompt) => {
+    try {
+      const r = await provider.chat([{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: dataUrl } }] }], { model, temperature: 0, signal });
+      const m = String(r?.text || "").match(/\{[\s\S]*\}/);
+      if (!m) return null;
+      const o = JSON.parse(m[0]);
+      const raw = Array.isArray(o.assets) ? o.assets : (Array.isArray(o.items) ? o.items : null);
+      if (!raw) return null;
+      return raw.filter((a) => a && typeof (a.name ?? a.asset ?? a.item) === "string")
+        .map((a) => ({ name: String(a.name ?? a.asset ?? a.item).slice(0, 60), placeholder: a.placeholder === true || /^(yes|true|box|flat|placeholder)$/i.test(String(a.placeholder ?? a.verdict ?? "")) }));
+    } catch { return null; }
+  };
+  const derive = `You are a STRICT art director reviewing a screenshot of a built game/app for this request:\n"${String(task || "").slice(0, 400)}"\n\nList the MAIN visible assets (each character, enemy, collectible, key prop, the ground/tiles, the HUD). For EACH, judge whether it is a DELIBERATELY DESIGNED / PAINTED asset (a recognizable form with shading and detail) or just a PLACEHOLDER — a plain flat solid-colour box or circle, programmer-art with no real form. Be strict: a coloured rectangle standing in for a character or prop is a PLACEHOLDER, flat colour is not texture.\nReply with ONLY this JSON, no prose:\n{"assets":[{"name":"<short asset name>","placeholder":true|false}, ...]}`;
+  const first = await ask(derive);
+  if (!first || !first.length) return null;
+  const names = first.map((a) => a.name);
+  const phCount = new Map(first.map((a) => [a.name, a.placeholder ? 1 : 0]));
+  // nothing flagged on the strict first pass → accept (don't spend more vision calls).
+  if (![...phCount.values()].some((v) => v === 1)) return { placeholders: [], total: names.length, votes: 1 };
+  const reJudge = `You are a STRICT art director. LOOK at this screenshot. For EACH asset below, answer whether it is a PLACEHOLDER — a plain flat solid-colour box/circle / programmer-art with no real form (true) — or a properly designed/painted asset (false):\n${names.map((n, i) => `${i + 1}. ${n}`).join("\n")}\nReply with ONLY this JSON, copying each name: {"assets":[{"name":"<asset>","placeholder":true|false}, ...]}`;
+  let rounds = 1;
+  for (let k = 1; k < votes; k++) {
+    const v = await ask(reJudge);
+    if (!v) continue;
+    rounds++;
+    for (const a of v) { const key = names.includes(a.name) ? a.name : names.find((n) => n.includes(a.name) || a.name.includes(n)); if (key) phCount.set(key, (phCount.get(key) || 0) + (a.placeholder ? 1 : 0)); }
+  }
+  const placeholders = names.filter((n) => (phCount.get(n) || 0) > rounds / 2);   // MAJORITY say placeholder
+  return { placeholders, total: names.length, votes: rounds };
+}
+
 // Find the balanced {...} block starting at index `s`, or -1. (string/escape aware)
 function balancedEnd(body, s) {
   let depth = 0, inStr = false, esc = false;
@@ -507,6 +546,12 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
                   trace.push({ step, visionChecklist: { present: crit.present, total: crit.total, missing: crit.missing.slice(0, 8), served: true } });
                   return `the vision QA checklist (${String(verifyModel).split("/").pop()}) found ${crit.present}/${crit.total} required things present — these are NOT visible in your served render yet:\n${crit.missing.slice(0, 8).map((m) => "  ✗ " + m).join("\n")}\nAdd each so EVERY checklist item is present, then verify again.`;
                 }
+                // VISION DESIGN REVIEW (Block 86): flat-placeholder assets in the served render (same model, vote).
+                const dr = await visionDesignReview(provider, verifyModel, task, dataUrl, signal);
+                if (dr && dr.placeholders.length) {
+                  trace.push({ step, designReview: { placeholders: dr.placeholders.slice(0, 8), total: dr.total, served: true } });
+                  return `the vision art-director (${String(verifyModel).split("/").pop()}) found ${dr.placeholders.length}/${dr.total} asset${dr.placeholders.length === 1 ? "" : "s"} that look like PLAIN FLAT PLACEHOLDER boxes, not designed/painted art:\n${dr.placeholders.slice(0, 8).map((m) => "  ✗ " + m).join("\n")}\nRedraw EACH as a real designed asset — recognizable form, shading/gradients, drawn detail — not a solid-colour rectangle, then verify again.`;
+                }
                 return null;
               }
             : null;
@@ -586,14 +631,8 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
                   if (!problem && typeof tools._visualLint === "function") {
                     const vl = tools._visualLint(gameFile);
                     if (vl && vl.issues && vl.issues.length) {
-                      // placeholder-art (Block 86) needs DESIGN remediation, not repositioning — and it's caught
-                      // model-free, so it closes the dishonest-pass hole when the model can't SEE the screen.
-                      const placeholder = vl.issues.some((i) => /PLAIN FLAT|placeholder-grade/.test(i));
-                      const fix = placeholder
-                        ? `Treat EACH visual element as a designed asset: give it real form — a drawn sprite (drawImage from a spritesheet / generated art), vector shapes (paths, curves), shading/gradients, and detail — not a single solid-colour rectangle. Redraw the placeholders as actual painted assets, then verify again.`
-                        : `Fix so every element is ON-screen, has a real size, and contrasts with its background.`;
-                      problem = `the render has VISUAL bugs the player would SEE:\n${vl.issues.slice(0, 5).map((i) => "  ✗ " + i).join("\n")}\n${fix}`;
-                      trace.push({ step, visualLint: vl.issues.length, placeholder });
+                      problem = `the render has VISUAL bugs the player would SEE:\n${vl.issues.slice(0, 5).map((i) => "  ✗ " + i).join("\n")}\nFix so every element is ON-screen, has a real size, and contrasts with its background.`;
+                      trace.push({ step, visualLint: vl.issues.length });
                     }
                   }
                   // SEMANTIC FIDELITY (Block 37): pixel-richness + static structure can't tell "looks like
@@ -607,6 +646,15 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
                       const punch = crit.missing.slice(0, 8).map((m) => "  ✗ " + m).join("\n");
                       problem = `the vision QA checklist (${String(verifyModel).split("/").pop()}) found ${crit.present}/${crit.total} required things present — these are NOT visible in your render yet:\n${punch}\nAdd each so EVERY checklist item is present, then verify again.`;
                       trace.push({ step, visionChecklist: { present: crit.present, total: crit.total, missing: crit.missing.slice(0, 8) } });
+                    }
+                    // VISION DESIGN REVIEW (Block 86): the look/design/paint judgment — the same vision model
+                    // names assets that read as plain flat PLACEHOLDER boxes (majority-vote). Reuses the capture.
+                    if (!problem) {
+                      const dr = await visionDesignReview(provider, verifyModel, task, dataUrl, signal);
+                      if (dr && dr.placeholders.length) {
+                        problem = `the vision art-director (${String(verifyModel).split("/").pop()}) found ${dr.placeholders.length}/${dr.total} asset${dr.placeholders.length === 1 ? "" : "s"} that look like PLAIN FLAT PLACEHOLDER boxes, not designed/painted art:\n${dr.placeholders.slice(0, 8).map((m) => "  ✗ " + m).join("\n")}\nRedraw EACH as a real designed asset — recognizable form, shading/gradients, drawn detail (sprites / paths / textures), not a solid-colour rectangle — then verify again.`;
+                        trace.push({ step, designReview: { placeholders: dr.placeholders.slice(0, 8), total: dr.total } });
+                      }
                     }
                   }
                 }

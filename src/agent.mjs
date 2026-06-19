@@ -291,10 +291,10 @@ BUILDING GAMES (make them real, not just code you can't verify): the DEFAULT is 
   PER-ASSET DISCIPLINE — plan, paint, verify EACH asset: list every visible asset (hero, each enemy,
   collectible, prop, tile, HUD) as its own checklist item; DESIGN each one (silhouette, palette, shading,
   a drawn detail) instead of a single solid-colour fillRect; verify each in isolation with see_asset before
-  wiring it in. A flat coloured rectangle is a PLACEHOLDER, not a finished asset. This is ENFORCED model-free:
-  a deterministic richness check inspects the running render and BLOCKS done if the whole scene is just flat
-  rectangles (no sprites, gradient/shaded fills, drawn shapes, or text) — so it holds even when no vision
-  model is watching. Give each asset real form (drawImage / paths+curves / gradients / text), not flat fills.
+  wiring it in. A flat coloured rectangle is a PLACEHOLDER, not a finished asset. This is ENFORCED: a VISION
+  model LOOKS at your running render in the done-gate and pushes back, per asset, on anything that reads as a
+  plain flat box or programmer-art placeholder — so give each asset real form (drawImage / paths+curves /
+  gradients / shading / text), not flat fills, or it won't pass.
 
 MULTI-LEVEL GAMES (don't ship a single playground — build a real progression): most agents stop at ONE
   level or clone level 1. Make a game with several MEANINGFULLY DIFFERENT levels and verify them all:
