@@ -2438,6 +2438,44 @@ console.log("== 66. no-op edit guard — an edit that changes nothing is rejecte
   fs.rmSync(d, { recursive: true, force: true });
 }
 
+console.log("== 66b. batch edits in one execute — edit_file accepts {edits:[…]}, loop normalizes + nudges (Block 87) ==");
+{
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "batch-")); const t = new Tools(d);
+  fs.writeFileSync(path.join(d, "a.js"), "const x = 1;\nconst y = 2;\n");
+  fs.writeFileSync(path.join(d, "b.js"), "let z = 3;\n");
+  // edit_file BATCH FORM: multiple edits in one call (path defaults per-edit to the call's path).
+  const r1 = t.edit_file({ path: "a.js", edits: [{ anchor: "const x = 1;", replacement: "const x = 10;" }, { anchor: "const y = 2;", replacement: "const y = 20;" }] });
+  ok("batch: edit_file {edits:[…]} applies MANY edits to one file in one execute", r1.ok === true && Array.isArray(r1.files) && r1.files.includes("a.js") && /x = 10/.test(fs.readFileSync(path.join(d, "a.js"), "utf8")) && /y = 20/.test(fs.readFileSync(path.join(d, "a.js"), "utf8")));
+  // a per-edit path lets ONE edit_file batch span multiple files.
+  fs.writeFileSync(path.join(d, "a.js"), "const x = 1;\n");
+  const r2 = t.edit_file({ path: "a.js", edits: [{ anchor: "const x = 1;", replacement: "const x = 9;" }, { path: "b.js", anchor: "let z = 3;", replacement: "let z = 30;" }] });
+  ok("batch: an edit_file batch can span multiple files (per-edit path)", r2.ok === true && r2.files.includes("a.js") && r2.files.includes("b.js") && /z = 30/.test(fs.readFileSync(path.join(d, "b.js"), "utf8")));
+  // ATOMIC: if any edit in the batch fails to match, NOTHING is written.
+  fs.writeFileSync(path.join(d, "a.js"), "const x = 9;\n");
+  const r3 = t.edit_file({ path: "a.js", edits: [{ anchor: "const x = 9;", replacement: "const x = 99;" }, { anchor: "NOT_PRESENT", replacement: "boom" }] });
+  ok("batch: a batch is ATOMIC — one failing edit writes nothing", r3.ok === false && r3.error === "ATOMIC_ABORT" && fs.readFileSync(path.join(d, "a.js"), "utf8") === "const x = 9;\n");
+
+  // LOOP NORMALIZATION: a model emitting edit_file with {edits:[…]} is run as a single edit_files execute.
+  fs.writeFileSync(path.join(d, "a.js"), "const x = 9;\nconst y = 2;\n");
+  const tt = new Tools(d);
+  const provNorm = { model: "m", chat: (() => { let i = 0; const s = [JSON.stringify({ tool: "edit_file", args: { path: "a.js", edits: [{ anchor: "const x = 9;", replacement: "const x = 1;" }, { anchor: "const y = 2;", replacement: "const y = 5;" }] } }), JSON.stringify({ tool: "done", args: {} })]; return async () => ({ text: s[i++] ?? JSON.stringify({ tool: "done", args: {} }), usage: {}, raw: {} }); })(), totals: () => ({ cost: 0 }) };
+  const rn = await runLoop({ provider: provNorm, tools: tt, toolMap: { edit_file: (a) => tt.edit_file(a), edit_files: (a) => tt.edit_files(a) }, systemPrompt: "s", task: "x", maxSteps: 5, designFirst: false });
+  ok("batch: the loop normalizes edit_file{edits} → ONE edit_files execute (both edits applied)", rn.trace.some((x) => x.tool === "edit_files") && !rn.trace.some((x) => x.tool === "edit_file") && /x = 1/.test(fs.readFileSync(path.join(d, "a.js"), "utf8")) && /y = 5/.test(fs.readFileSync(path.join(d, "a.js"), "utf8")));
+
+  // BATCH NUDGE: 3 single edit_file calls in a row → one nudge to batch them.
+  fs.writeFileSync(path.join(d, "c.js"), "a1\na2\na3\na4\n");
+  const tc = new Tools(d);
+  const provSingle = { model: "m", chat: (() => { let i = 0; const s = [
+    JSON.stringify({ tool: "edit_file", args: { path: "c.js", anchor: "a1", replacement: "b1" } }),
+    JSON.stringify({ tool: "edit_file", args: { path: "c.js", anchor: "a2", replacement: "b2" } }),
+    JSON.stringify({ tool: "edit_file", args: { path: "c.js", anchor: "a3", replacement: "b3" } }),
+    JSON.stringify({ tool: "done", args: {} }),
+  ]; return async () => ({ text: s[i++] ?? JSON.stringify({ tool: "done", args: {} }), usage: {}, raw: {} }); })(), totals: () => ({ cost: 0 }) };
+  const rb = await runLoop({ provider: provSingle, tools: tc, toolMap: { edit_file: (a) => tc.edit_file(a), edit_files: (a) => tc.edit_files(a) }, systemPrompt: "s", task: "x", maxSteps: 6, designFirst: false });
+  ok("batch-nudge: 3 single edit_file calls in a row → ONE nudge to batch", rb.trace.some((x) => x.batchNudge >= 3) && rb.messages.some((m) => typeof m.content === "string" && /one execute|BATCH|edit_files/.test(m.content)));
+  fs.rmSync(d, { recursive: true, force: true });
+}
+
 console.log("== 67. syntax-error LOCATION — map to the file line + show node's code frame (Block 45) ==");
 {
   const { nodeCheckCode, extractScripts, checkPageJs } = await import("./src/webcheck.mjs");

@@ -804,8 +804,15 @@ export class Tools {
   }
 
   // COMPACT edit protocol (proov). Returns structured repair packet on failure.
-  edit_file({ path: rel, anchor, replacement, op = "replace", occurrence }) {
-    if (typeof rel !== "string" || !rel) return { ok: false, error: "NO_PATH", hint: 'edit_file needs a "path" (string), an "anchor" (a small VERBATIM snippet copied from the file to locate the edit), and a "replacement". Example: {"tool":"edit_file","args":{"path":"index.html","anchor":"<old lines>","replacement":"<new lines>"}}' };
+  edit_file({ path: rel, anchor, replacement, op = "replace", occurrence, edits }) {
+    // BATCH FORM (proov): edit_file can carry MANY edits in ONE execute — pass "edits":[{anchor,replacement,op},…]
+    // (an optional per-edit "path" overrides this call's path, so you can also span files). Applied ATOMICALLY by
+    // delegating to edit_files. This lets the agent make several edits in a single tool call instead of one per turn.
+    if (Array.isArray(edits) && edits.length) {
+      const norm = edits.map((e) => ({ op: "replace", ...(e || {}), path: (e && e.path) || rel }));
+      return this.edit_files({ edits: norm });
+    }
+    if (typeof rel !== "string" || !rel) return { ok: false, error: "NO_PATH", hint: 'edit_file needs a "path" (string), an "anchor" (a small VERBATIM snippet copied from the file to locate the edit), and a "replacement". Example: {"tool":"edit_file","args":{"path":"index.html","anchor":"<old lines>","replacement":"<new lines>"}}. For SEVERAL edits at once, pass "edits":[{"anchor":"…","replacement":"…"},…] in one call.' };
     if (typeof anchor !== "string" || !anchor) return { ok: false, error: "NO_ANCHOR", path: rel, hint: 'edit_file needs an "anchor": a small verbatim snippet copied character-for-character from the file at the spot to change. To create a NEW file use create_file instead.' };
     if (replacement == null) return { ok: false, error: "NO_REPLACEMENT", path: rel, hint: 'pass "replacement": the new text to put in place of the anchor (use "" to delete the anchor).' };
     const abs = this._resolve(rel);

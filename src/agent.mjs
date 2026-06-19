@@ -95,9 +95,13 @@ EDIT PROTOCOL (important — this is how you keep edits cheap and correct):
 - To replace an ENTIRE function/class/method, prefer edit_symbol — pass its name + the FULL new
   definition; you do NOT copy the old body as an anchor (cheaper for large functions). For a small
   change INSIDE a function, use edit_file with a small anchor.
-- For SEVERAL edits at once (across one or more files), prefer edit_files — it applies them
-  ATOMICALLY (all-or-nothing) in fewer turns; same anchor rules. If any edit fails, none apply
-  and you get repair packets for the failing ones.
+- BATCH BY DEFAULT — make MULTIPLE edits in ONE execute, not one edit per turn. Whenever you have 2+
+  changes (even to the SAME file), put them ALL in a single call: edit_files {"edits":[{path,anchor,
+  replacement,op},…]} (or the same on edit_file: {"path":"f.js","edits":[{anchor,replacement},…]} — path
+  defaults per-edit to the call's path). They apply ATOMICALLY (all-or-nothing) in ONE turn; same anchor
+  rules; edits to one file apply in order on the evolving buffer. If any edit fails, none apply and you get
+  repair packets for the failing ones — fix those and resend the whole batch. Single edit_file is only for a
+  lone one-off change. Don't spend a turn per edit when you can do them together.
 - git_* tools inspect the repo and can commit; proov NEVER pushes.
 - MATCH THE HOUSE STYLE: new/edited code must be indistinguishable from the surrounding code —
   indentation (tabs vs spaces + width), quote style, semicolons, and naming case. A HOUSE STYLE line
@@ -891,7 +895,15 @@ export class Session {
       find_symbol: (a) => t.find_symbol(a),
       find_refs: (a) => t.find_refs(a),
       run_command: (a) => t.run_command(a),
-      edit_file: captureEdit("edit_file", (a) => t.edit_file(a)),
+      // edit_file accepts a single edit OR a batch ({edits:[…]}); a batch is captured like edit_files (per-file
+      // diffs) so the UI/approval still preview every change made in the one execute.
+      edit_file: (a) => {
+        if (Array.isArray(a?.edits) && a.edits.length) {
+          const norm = a.edits.map((e) => ({ op: "replace", ...(e || {}), path: (e && e.path) || a?.path }));
+          return captureEdits({ edits: norm });
+        }
+        return captureEdit("edit_file", (x) => t.edit_file(x))(a);
+      },
       create_file: captureEdit("create_file", (a) => t.create_file(a)),
       edit_files: captureEdits,
       edit_symbol: captureSymbolEdit,

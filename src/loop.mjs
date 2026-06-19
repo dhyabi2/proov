@@ -326,6 +326,7 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
   // (editModel) handles editing/bug-fixing. We pick per turn from the most recent mutation: while the
   // agent is creating files it stays on the creator; once it edits existing code it uses the editor.
   let editPhase = false;   // false → creator model; true → editor model
+  let consecEdits = 0; let batchNudged = false;   // Block 87: nudge to BATCH after several single edit_file calls
   const EDIT_TOOLS = new Set(["edit_file", "edit_files", "edit_symbol"]);
   // Visual-verification tools (Block 59): used to detect the screenshot-thrash anti-pattern. see_page counts
   // only with visual:true (text-mode see_page is a cheap, legit syntax/blank check). 4 visual checks with no
@@ -700,6 +701,15 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
       break;
     }
 
+    // BATCH EDITS IN ONE EXECUTE (Block 87): an edit_file carrying an "edits":[…] array is a batch — normalize it
+    // to an edit_files call so the agent makes MANY edits in a SINGLE tool execution and every consumer (preview,
+    // capture, diff, trace, syntax-check) handles it uniformly. Per-edit path defaults to the call's "path".
+    if (call.tool === "edit_file" && call.args && Array.isArray(call.args.edits) && call.args.edits.length && toolMap.edit_files) {
+      const basePath = call.args.path;
+      call.tool = "edit_files";
+      call.args = { edits: call.args.edits.map((e) => ({ op: "replace", ...(e || {}), path: (e && e.path) || basePath })) };
+    }
+
     const fn = toolMap[call.tool];
     if (!fn) {
       messages.push({ role: "user", content: `Unknown tool "${call.tool}". Available: ${Object.keys(toolMap).join(", ")}, done.` });
@@ -791,20 +801,24 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
       continue;
     }
     // AUTO SYNTAX-CHECK (Block 84): catch a syntax error the agent just introduced IMMEDIATELY (it shipped
-    // missing-semicolon / typo'd-loop bugs and discovered them rounds later). One-shot-ish per fix.
+    // missing-semicolon / typo'd-loop bugs and discovered them rounds later). One-shot-ish per fix. Checks EVERY
+    // file a batch edit touched (Block 87) — a multi-edit execute can break more than one file.
     if (MUTATING_TOOLS.has(call.tool) && result && result.ok !== false && tools && tools.workdir) {
-      const fpath = (call.args && call.args.path) || (Array.isArray(result.files) ? result.files[0] : null);
-      if (fpath && /\.(m?js|cjs|html?)$/i.test(fpath)) {
+      const touched = Array.isArray(result.files) ? result.files : ((call.args && call.args.path) ? [call.args.path] : []);
+      const syntaxErrs = [];
+      for (const fpath of touched) {
+        if (!fpath || !/\.(m?js|cjs|html?)$/i.test(fpath)) continue;
         try {
           const abs = path.join(tools.workdir, fpath);
           const errs = fs.existsSync(abs) ? quickSyntaxErrors(abs) : [];
-          if (errs.length) {
-            noProgress = 0;
-            messages.push({ role: "user", content: `⚠ Your edit to ${fpath} introduced a SYNTAX ERROR — fix THAT line now, do not rewrite the file:\n${errs.join("\n")}` });
-            trace.push({ step, syntaxError: fpath });
-            continue;
-          }
+          if (errs.length) syntaxErrs.push(`${fpath}: ${errs.join("; ")}`);
         } catch { /* */ }
+      }
+      if (syntaxErrs.length) {
+        noProgress = 0;
+        messages.push({ role: "user", content: `⚠ Your edit${syntaxErrs.length > 1 ? "s" : ""} introduced a SYNTAX ERROR — fix THAT line now, do not rewrite the file:\n${syntaxErrs.join("\n")}` });
+        trace.push({ step, syntaxError: touched.find((f) => syntaxErrs.some((e) => e.startsWith(f + ":"))) || touched[0] });
+        continue;
       }
     }
 
@@ -818,6 +832,16 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
       messages.push({ role: "user", content: `⚠ That command MASSIVELY changed a file's size:\n${lines}\nAn in-place stream edit (sed/perl -i) that matches more than intended silently DUPLICATES or GUTS content — this is how a "N levels · N clones" corruption happens. STOP: read the file (or git diff) and confirm the change is what you meant. If it's wrong, restore it before doing anything else — don't build on a corrupted file.` });
       trace.push({ step, blastRadius: result.blastRadius.map((b) => b.file) });
       continue;
+    }
+
+    // BATCH NUDGE (Block 87): several single edit_file calls in a row = a turn wasted per edit. Nudge ONCE to
+    // batch future edits into ONE execute. (A batched edit was normalized to edit_files above, so it resets this.)
+    if (call.tool === "edit_file" && result && result.ok !== false) consecEdits++;
+    else consecEdits = 0;   // any other tool (a batch, a read, a verify) breaks the single-edit streak
+    if (!batchNudged && consecEdits >= 3) {
+      batchNudged = true;
+      messages.push({ role: "user", content: `You've made ${consecEdits} separate edit_file calls in a row — that's a whole turn per edit. When you have several changes, make them in ONE execute: edit_files {"edits":[{path,anchor,replacement},…]} (or edit_file {"path":…,"edits":[…]}). They apply atomically in a single turn. Group your remaining related edits into one call.` });
+      trace.push({ step, batchNudge: consecEdits });
     }
 
     // SCREENSHOT-THRASH guard (Block 59): completing a task = real progress → reset the counter. A visual
