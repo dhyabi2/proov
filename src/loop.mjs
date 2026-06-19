@@ -586,8 +586,14 @@ export async function runLoop({ provider, tools, toolMap, systemPrompt, task, ma
                   if (!problem && typeof tools._visualLint === "function") {
                     const vl = tools._visualLint(gameFile);
                     if (vl && vl.issues && vl.issues.length) {
-                      problem = `the render has VISUAL bugs the player would SEE:\n${vl.issues.slice(0, 5).map((i) => "  ✗ " + i).join("\n")}\nFix so every element is ON-screen, has a real size, and contrasts with its background.`;
-                      trace.push({ step, visualLint: vl.issues.length });
+                      // placeholder-art (Block 86) needs DESIGN remediation, not repositioning — and it's caught
+                      // model-free, so it closes the dishonest-pass hole when the model can't SEE the screen.
+                      const placeholder = vl.issues.some((i) => /PLAIN FLAT|placeholder-grade/.test(i));
+                      const fix = placeholder
+                        ? `Treat EACH visual element as a designed asset: give it real form — a drawn sprite (drawImage from a spritesheet / generated art), vector shapes (paths, curves), shading/gradients, and detail — not a single solid-colour rectangle. Redraw the placeholders as actual painted assets, then verify again.`
+                        : `Fix so every element is ON-screen, has a real size, and contrasts with its background.`;
+                      problem = `the render has VISUAL bugs the player would SEE:\n${vl.issues.slice(0, 5).map((i) => "  ✗ " + i).join("\n")}\n${fix}`;
+                      trace.push({ step, visualLint: vl.issues.length, placeholder });
                     }
                   }
                   // SEMANTIC FIDELITY (Block 37): pixel-richness + static structure can't tell "looks like

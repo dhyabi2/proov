@@ -11,8 +11,12 @@ import { renderDomGL, renderDom } from "./eye.mjs";
 // little input so the game actually renders frames; writes a JSON tally to a hidden <pre>.
 export function lintInject(budget = 9000, keys = ["ArrowRight", "ArrowUp", "Space"]) {
   return `<script>(function(){
-  var O={off:0,zero:0,invis:0,total:0,bg:null};
+  // visibility tally (off/zero/invis) + RICHNESS tally (Block 86): how the scene is DRAWN — flat rects vs real
+  // sprites (drawImage), vector shapes (fill/stroke of a path), gradients/patterns, and text. This lets a model-
+  // FREE check tell "designed/painted assets" from "everything is a plain coloured box" (the placeholder look).
+  var O={off:0,zero:0,invis:0,total:0,bg:null,rects:0,rectArea:0,imgs:0,paths:0,grads:0,texts:0,cArea:0,cols:{},ncols:0};
   function ck(s){return (''+s).replace(/\\s+/g,'').toLowerCase();}
+  function col(style){ if(typeof style==='string'){var c=ck(style); if(!O.cols[c]){if(O.ncols<60){O.cols[c]=1;O.ncols++;}}} else if(style){O.grads++;} }
   var orig=HTMLCanvasElement.prototype.getContext;
   HTMLCanvasElement.prototype.getContext=function(t){
     var ctx=orig.apply(this,arguments); if(t!=='2d'||!ctx||ctx.__pl)return ctx; ctx.__pl=1; var cv=this;
@@ -21,12 +25,16 @@ export function lintInject(budget = 9000, keys = ["ArrowRight", "ArrowUp", "Spac
       if(w<=0||h<=0){O.zero++;return;}
       if(!inb(x,y,w,h)){O.off++;return;}
       if((w*h)>=0.7*cv.width*cv.height&&style){O.bg=ck(style);}
-      else if(O.bg&&style&&ck(style)===O.bg){O.invis++;}
+      else if(O.bg&&style&&typeof style==='string'&&ck(style)===O.bg){O.invis++;}
     }
-    var fr=ctx.fillRect.bind(ctx); ctx.fillRect=function(x,y,w,h){rec(x,y,w,h,ctx.fillStyle);return fr(x,y,w,h);};
-    var sr=ctx.strokeRect.bind(ctx); ctx.strokeRect=function(x,y,w,h){rec(x,y,w,h,ctx.strokeStyle);return sr(x,y,w,h);};
-    var di=ctx.drawImage.bind(ctx); ctx.drawImage=function(){var a=arguments; if(a.length>=5){rec(a[1],a[2],a[3],a[4],null);} else if(a.length>=3){var im=a[0];rec(a[1],a[2],(im&&(im.width||im.videoWidth))||0,(im&&(im.height||im.videoHeight))||0,null);} return di.apply(ctx,a);};
-    var ftn=ctx.fillText.bind(ctx); ctx.fillText=function(s,x,y){O.total++; if(O.bg&&ck(ctx.fillStyle)===O.bg){O.invis++;} return ftn.apply(ctx,arguments);};
+    var fr=ctx.fillRect.bind(ctx); ctx.fillRect=function(x,y,w,h){O.rects++;O.rectArea+=Math.max(0,w)*Math.max(0,h);O.cArea=Math.max(O.cArea,cv.width*cv.height);col(ctx.fillStyle);rec(x,y,w,h,ctx.fillStyle);return fr(x,y,w,h);};
+    var sr=ctx.strokeRect.bind(ctx); ctx.strokeRect=function(x,y,w,h){O.rects++;O.rectArea+=Math.max(0,w)*Math.max(0,h);O.cArea=Math.max(O.cArea,cv.width*cv.height);col(ctx.strokeStyle);rec(x,y,w,h,ctx.strokeStyle);return sr(x,y,w,h);};
+    var di=ctx.drawImage.bind(ctx); ctx.drawImage=function(){var a=arguments;O.imgs++; if(a.length>=5){rec(a[1],a[2],a[3],a[4],null);} else if(a.length>=3){var im=a[0];rec(a[1],a[2],(im&&(im.width||im.videoWidth))||0,(im&&(im.height||im.videoHeight))||0,null);} return di.apply(ctx,a);};
+    var ftn=ctx.fillText.bind(ctx); ctx.fillText=function(s,x,y){O.total++;O.texts++; if(O.bg&&ck(ctx.fillStyle)===O.bg){O.invis++;} return ftn.apply(ctx,arguments);};
+    // vector shapes (a drawn character / curve / polygon) — fill()/stroke() of a built path is real form, not a box.
+    var fl=ctx.fill.bind(ctx); ctx.fill=function(){O.paths++;col(ctx.fillStyle);return fl.apply(ctx,arguments);};
+    var st=ctx.stroke.bind(ctx); ctx.stroke=function(){O.paths++;col(ctx.strokeStyle);return st.apply(ctx,arguments);};
+    if(ctx.putImageData){var pid=ctx.putImageData.bind(ctx); ctx.putImageData=function(){O.imgs++;return pid.apply(ctx,arguments);};}
     return ctx;
   };
   function fire(){var keys=${JSON.stringify(keys)};keys.forEach(function(k){var c=(k==='Space')?' ':k,kc=(k==='ArrowRight')?39:(k==='ArrowUp')?38:(k==='ArrowLeft')?37:(k==='ArrowDown')?40:32;[document,window].forEach(function(tg){try{tg.dispatchEvent(new KeyboardEvent('keydown',{key:c,code:k,keyCode:kc,which:kc,bubbles:true}));}catch(e){}});});}
@@ -41,6 +49,27 @@ export function parseLint(dom) {
   try { return JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")); } catch { return null; }
 }
 
+// PLACEHOLDER-ART verdict (Block 86) — the model-FREE answer to "is this designed/painted, or just flat boxes?"
+// The dishonest-review hole: when the active model can't see images (a code model), the vision flat-box check
+// no-ops and nothing else measures FIDELITY. This does, from the draw composition alone — no model, no game-
+// specific knowledge. It fires ONLY on a degenerate render: entirely flat rectangles, few colours, and NOT a
+// single sprite (drawImage), vector shape (fill/stroke path), gradient/pattern, or text. All metrics are frame-
+// count invariant (ratios / distinct sets / means), so it's robust to however many frames were captured. It is
+// deliberately CONSERVATIVE — any real detail (a drawn curve, a gradient-shaded block, a sprite, a label, or
+// pixel-art's many small cells) lifts the scene out of "placeholder" — so intentional minimalism isn't punished.
+export function richnessIssue(o) {
+  if (!o) return null;
+  const rects = o.rects || 0;
+  const rich = (o.imgs || 0) + (o.paths || 0) + (o.grads || 0) + (o.texts || 0);
+  if (rects < 4) return null;            // too little drawn to judge a "look"
+  if (rich > 0) return null;             // any sprite / vector shape / gradient / text → not placeholder-grade
+  const colors = o.ncols || 0;
+  if (colors > 12) return null;          // a rich palette (incl. hand-placed pixel art) → not a few flat boxes
+  const meanAreaPct = (o.cArea > 0 && rects > 0) ? 100 * (o.rectArea / rects) / o.cArea : 0;
+  if (meanAreaPct < 0.15) return null;   // many tiny rects = pixel-art cells, not entity-sized placeholder boxes
+  return `every element renders as a PLAIN FLAT COLOURED BOX — the whole scene is ${colors} flat colour${colors === 1 ? "" : "s"} of rectangles with NO sprites, NO gradient/shaded fills, NO drawn shapes (curves/polygons), and NO text. This is placeholder-grade art, not designed/painted assets`;
+}
+
 // Turn a tally into human issues. Pure + unit-testable.
 export function lintIssues(o) {
   if (!o) return [];
@@ -50,6 +79,8 @@ export function lintIssues(o) {
   if (o.zero > 0) issues.push(`${o.zero} draw${o.zero === 1 ? " has" : "s have"} ZERO / negative size (nothing renders)`);
   if (o.invis > 0) issues.push(`${o.invis} element${o.invis === 1 ? " is" : "s are"} the SAME colour as the background (invisible — e.g. text/HUD you can't read)`);
   if ((o.total || 0) > 0 && visible < 3) issues.push(`almost nothing is actually visible on the canvas (only ${visible} of ${o.total} draw ops land on screen)`);
+  const rich = richnessIssue(o);
+  if (rich) issues.push(rich);
   return issues;
 }
 

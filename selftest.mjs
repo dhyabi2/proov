@@ -2935,9 +2935,10 @@ console.log("== 68p. workflow events — emit BPMN-step-tagged events to a sink 
 
 console.log("== 68q. visual verification — deterministic lint + running/legible capture (Block 80) ==");
 {
-  const { lintInject, parseLint, lintIssues } = await import("./src/visuallint.mjs");
+  const { lintInject, parseLint, lintIssues, richnessIssue } = await import("./src/visuallint.mjs");
   const inj = lintInject(9000);
   ok("vlint: instruments getContext + fillRect/drawImage/fillText + fires input", /getContext/.test(inj) && /fillRect/.test(inj) && /drawImage/.test(inj) && /fillText/.test(inj) && /KeyboardEvent/.test(inj) && /__proov_lint/.test(inj));
+  ok("vlint: instruments richness — paths (fill/stroke), images, colours", /ctx\.fill=/.test(inj) && /ctx\.stroke=/.test(inj) && /O\.imgs/.test(inj) && /O\.rects/.test(inj) && /O\.ncols/.test(inj));
   const o = parseLint('<pre id="__proov_lint">{"off":2,"zero":1,"invis":3,"total":10,"bg":"#000"}</pre>');
   ok("vlint: parses the lint tally", o && o.off === 2 && o.zero === 1 && o.invis === 3);
   const issues = lintIssues(o);
@@ -2946,6 +2947,28 @@ console.log("== 68q. visual verification — deterministic lint + running/legibl
   ok("vlint: 'almost nothing visible' is flagged", lintIssues({ off: 0, zero: 0, invis: 0, total: 2 }).some((i) => /almost nothing/.test(i)));
   const { Tools } = await import("./src/tools.mjs");
   ok("vlint: _visualLint is wired on Tools", typeof new Tools(os.tmpdir())._visualLint === "function");
+
+  // PLACEHOLDER-ART verdict (Block 86) — the MODEL-FREE answer to "designed/painted vs flat boxes", which closes
+  // the dishonest-pass hole when the active model can't see images. A scene of a few large flat rects / few
+  // colours / no sprites|paths|gradients|text fires; ANY real detail clears it (low false-positive).
+  const cA = 320 * 200;   // canvas area for the mean-rect-area metric
+  const placeholder = { rects: 6, rectArea: 6 * 0.02 * cA, imgs: 0, paths: 0, grads: 0, texts: 0, ncols: 4, cArea: cA };
+  ok("rich: a scene of a few flat boxes (no sprite/path/gradient/text) is flagged as PLACEHOLDER", /PLAIN FLAT COLOURED BOX/.test(richnessIssue(placeholder) || ""));
+  ok("rich: lintIssues surfaces the placeholder verdict (so the existing gate blocks it)", lintIssues(placeholder).some((i) => /placeholder-grade/.test(i)));
+  ok("rich: a sprite (drawImage) clears it", richnessIssue({ ...placeholder, imgs: 3 }) === null);
+  ok("rich: a drawn vector shape (fill/stroke path) clears it", richnessIssue({ ...placeholder, paths: 5 }) === null);
+  ok("rich: a gradient/shaded fill clears it", richnessIssue({ ...placeholder, grads: 2 }) === null);
+  ok("rich: any on-canvas text clears it", richnessIssue({ ...placeholder, texts: 4 }) === null);
+  ok("rich: a rich palette (>12 colours) is not 'a few flat boxes'", richnessIssue({ ...placeholder, ncols: 20 }) === null);
+  ok("rich: pixel art — MANY tiny rects (small mean area) — is NOT flagged", richnessIssue({ rects: 400, rectArea: 400 * 16, imgs: 0, paths: 0, grads: 0, texts: 0, ncols: 10, cArea: cA }) === null);
+  ok("rich: too little drawn (rects<4) is not judged", richnessIssue({ rects: 2, rectArea: 2 * 0.05 * cA, ncols: 2, cArea: cA }) === null);
+  ok("rich: a clean visibility tally without richness fields never false-fires", lintIssues({ off: 0, zero: 0, invis: 0, total: 50 }).length === 0);
+  // the placeholder verdict is wired into the model-free game gate with DESIGN remediation (not repositioning),
+  // and the per-asset discipline is in the system prompt — so it's planned, developed, AND verified.
+  const _loopSrc = fs.readFileSync(path.join(process.cwd(), "src", "loop.mjs"), "utf8");
+  const _agentSrc = fs.readFileSync(path.join(process.cwd(), "src", "agent.mjs"), "utf8");
+  ok("rich gate: the game gate routes placeholder art to DESIGN remediation (paint real assets)", /PLAIN FLAT\|placeholder-grade/.test(_loopSrc) && /designed asset/.test(_loopSrc));
+  ok("rich plan: the system prompt carries the per-asset plan/paint/verify discipline", /PER-ASSET DISCIPLINE/.test(_agentSrc) && /ENFORCED model-free/.test(_agentSrc));
 
   // DOM lint (Block 81): non-game web UI — zero-size/off-screen block; low-contrast/overflow need a higher count.
   const { domLintInject, parseDomLint, domLintIssues } = await import("./src/visuallint.mjs");

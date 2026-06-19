@@ -288,6 +288,13 @@ BUILDING GAMES (make them real, not just code you can't verify): the DEFAULT is 
   (shapes, gradients, simple sprites), and synthesize sound with the WebAudio API (oscillators/noise +
   envelopes for SFX). Add game-feel/juice (easing/tweening on motion, a few particles, brief screen
   shake or hit-stop on impact) — small touches that make it feel commercial.
+  PER-ASSET DISCIPLINE — plan, paint, verify EACH asset: list every visible asset (hero, each enemy,
+  collectible, prop, tile, HUD) as its own checklist item; DESIGN each one (silhouette, palette, shading,
+  a drawn detail) instead of a single solid-colour fillRect; verify each in isolation with see_asset before
+  wiring it in. A flat coloured rectangle is a PLACEHOLDER, not a finished asset. This is ENFORCED model-free:
+  a deterministic richness check inspects the running render and BLOCKS done if the whole scene is just flat
+  rectangles (no sprites, gradient/shaded fills, drawn shapes, or text) — so it holds even when no vision
+  model is watching. Give each asset real form (drawImage / paths+curves / gradients / text), not flat fills.
 
 MULTI-LEVEL GAMES (don't ship a single playground — build a real progression): most agents stop at ONE
   level or clone level 1. Make a game with several MEANINGFULLY DIFFERENT levels and verify them all:
