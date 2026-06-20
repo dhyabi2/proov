@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import { hasPdfInContext, PDF_PLUGIN } from "./multimodal.mjs";
 import { parseContextLimit } from "./compress.mjs";
-import { debugLog } from "./debug.mjs";
+import { debugLog, debugBody } from "./debug.mjs";
 
 // Portable key fallback: OPENROUTER_API_KEY env, then a .env / .env.local in the CURRENT dir.
 // (config.apiKey — resolved from env / flags / ~/.proov.json — is the primary path via opts.)
@@ -84,6 +84,16 @@ export class Provider {
     let pluginList = Array.isArray(plugins) ? [...plugins] : [];
     if (hasPdfInContext(messages) && !pluginList.some(p => p && p.id === "file-parser")) pluginList.push(PDF_PLUGIN);
     let lastErr;
+    // Build the request body ONCE (identical across retries) and LINK it to its own file by id (Block 90): the
+    // debug.log gets a compact one-line index entry pointing at the raw body, instead of inlining the whole
+    // (often 250K-token) request every turn. The API key lives only in the headers — never in the body.
+    const url = this.baseUrl + "/chat/completions";
+    const reqBody = {
+      model: useModel, temperature, max_tokens: this.maxTokens,
+      messages: applyPromptCache(messages, useModel, this.cacheTtl),   // cache the stable prefix — no text change
+      ...(pluginList.length ? { plugins: pluginList } : {}),
+    };
+    const reqId = debugBody("request", { url, model: useModel, messages: Array.isArray(reqBody.messages) ? reqBody.messages.length : 0, chars: JSON.stringify(reqBody).length }, reqBody);
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       const ctrl = new AbortController();
       let timedOut = false;
@@ -91,15 +101,6 @@ export class Provider {
       // chain the caller's abort signal (e.g. Ctrl-C in the REPL) into this request
       const onAbort = () => ctrl.abort();
       if (signal) { if (signal.aborted) ctrl.abort(); else signal.addEventListener("abort", onAbort, { once: true }); }
-      // Build the request body ONCE so the debug log records the EXACT bytes we send (Block 90). The API key
-      // lives only in the headers (redacted by the logger), never in the body.
-      const reqBody = {
-        model: useModel, temperature, max_tokens: this.maxTokens,
-        messages: applyPromptCache(messages, useModel, this.cacheTtl),   // cache the stable prefix — no text change
-        ...(pluginList.length ? { plugins: pluginList } : {}),
-      };
-      const url = this.baseUrl + "/chat/completions";
-      debugLog("request", { url, attempt: attempt + 1, model: useModel, body: reqBody });
       try {
         const r = await fetch(url, {
           method: "POST",
@@ -110,7 +111,7 @@ export class Provider {
         clearTimeout(timer);
         if (signal) signal.removeEventListener?.("abort", onAbort);
         const d = await r.json();
-        debugLog("response", { url, attempt: attempt + 1, model: useModel, status: r.status, ok: r.ok, body: d });
+        debugBody("response", { request: reqId, attempt: attempt + 1, model: useModel, status: r.status, ok: r.ok, usage: d && d.usage || null }, d);
         if (!r.ok) {
           lastErr = new Error(humanizeApiError(r.status, d));
           // CONTEXT OVERFLOW (Block 88): the API names the model's real window ("maximum context length is N
@@ -142,7 +143,7 @@ export class Provider {
       } catch (e) {
         clearTimeout(timer);
         if (signal) signal.removeEventListener?.("abort", onAbort);
-        debugLog("error", { url, attempt: attempt + 1, model: useModel, timedOut, aborted: !!signal?.aborted, message: String((e && e.message) || e).slice(0, 500) });
+        debugLog("error", { request: reqId, attempt: attempt + 1, model: useModel, timedOut, aborted: !!signal?.aborted, message: String((e && e.message) || e).slice(0, 500) });
         // a caller abort (Ctrl-C) must propagate immediately, not retry
         if (signal?.aborted) { const a = new Error("aborted"); a.name = "AbortError"; throw a; }
         // OUR timeout fired (not a user abort): a distinct, clearly-worded, retryable failure so it

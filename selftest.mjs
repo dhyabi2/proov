@@ -3416,7 +3416,7 @@ console.log("== 56b. HARD context-fit — never exceed the model's window; learn
 
 console.log("== 90. debug log — default-ON JSONL of raw requests/responses + tool calls, secrets redacted (Block 90) ==");
 {
-  const { configureDebug, debugLog, debugEnabled, defaultDebugFile } = await import("./src/debug.mjs");
+  const { configureDebug, debugLog, debugBody, bodiesDir, debugEnabled, defaultDebugFile } = await import("./src/debug.mjs");
   const dbgDir = fs.mkdtempSync(path.join(os.tmpdir(), "dbg-"));
   const dbgFile = path.join(dbgDir, "debug.log");
   // default location is the home .proov dir.
@@ -3442,7 +3442,20 @@ console.log("== 90. debug log — default-ON JSONL of raw requests/responses + t
   ok("debug: disabled → nothing is written", debugEnabled() === false && fs.statSync(dbgFile).size === sizeBefore);
   ok("debug: never throws on bad input", (() => { try { configureDebug({ enabled: true, file: dbgFile }); debugLog("x", { c: (() => { const o = {}; o.self = o; return o; })() }); configureDebug({ enabled: false }); return true; } catch { return false; } })());
 
-  // PROVIDER integration: a real Provider.chat writes the RAW request + response, and the API key never appears.
+  // LINKED BODIES: a heavy body goes to its OWN file by id; debug.log keeps only a compact index line pointing
+  // at it. The id lets you open the exact request/response without scrolling past megabytes.
+  const dbgL = path.join(dbgDir, "linked.log");
+  configureDebug({ enabled: true, file: dbgL });
+  const bid = debugBody("response", { model: "m", status: 200 }, { choices: [{ message: { content: "the full body" } }], secret: "sk-or-LINKEDSECRET42" });
+  const idxLine = JSON.parse(fs.readFileSync(dbgL, "utf8").trim().split("\n").filter((l) => l && !l.startsWith("#")).pop());
+  ok("debug: debugBody returns an id and the index line references it + a body path (not the body)", typeof bid === "string" && idxLine.id === bid && typeof idxLine.body === "string" && idxLine.status === 200 && idxLine.choices === undefined);
+  const bodyPath = path.join(path.dirname(dbgL), idxLine.body);
+  const bodyObj = JSON.parse(fs.readFileSync(bodyPath, "utf8"));
+  ok("debug: the linked file holds the FULL raw body, addressable by id", path.basename(bodyPath) === bid + ".json" && bodyObj.choices[0].message.content === "the full body");
+  ok("debug: secrets are redacted INSIDE the linked body file too", bodyObj.secret === "sk-or-***REDACTED***" && !fs.readFileSync(bodyPath, "utf8").includes("LINKEDSECRET42"));
+  configureDebug({ enabled: false });
+
+  // PROVIDER integration: Provider.chat LINKS the raw request + response by id; debug.log stays compact; key safe.
   const dbgFile2 = path.join(dbgDir, "prov.log");
   configureDebug({ enabled: true, file: dbgFile2 });
   const { Provider } = await import("./src/provider.mjs");
@@ -3452,10 +3465,15 @@ console.log("== 90. debug log — default-ON JSONL of raw requests/responses + t
     const prov = new Provider({ apiKey: "sk-or-v1-SUPERSECRETKEY", model: "test/model", maxRetries: 0 });
     const resp = await prov.chat([{ role: "user", content: "ping the model" }]);
     ok("debug: Provider.chat still returns normally with logging on", resp && resp.text === "hello back");
-    const blob = fs.readFileSync(dbgFile2, "utf8");
-    const evs = blob.trim().split("\n").filter((l) => l && !l.startsWith("#")).map((l) => JSON.parse(l));
-    ok("debug: provider logs the RAW request (messages) and response (model output)", evs.some((e) => e.event === "request" && JSON.stringify(e.body).includes("ping the model")) && evs.some((e) => e.event === "response" && JSON.stringify(e.body).includes("hello back")));
-    ok("debug: the API key NEVER appears anywhere in the log", !blob.includes("SUPERSECRETKEY"));
+    const evs = fs.readFileSync(dbgFile2, "utf8").trim().split("\n").filter((l) => l && !l.startsWith("#")).map((l) => JSON.parse(l));
+    const reqEv = evs.find((e) => e.event === "request"), respEv = evs.find((e) => e.event === "response");
+    ok("debug: the request + response are LINKED by id (response references the request id)", reqEv && respEv && typeof reqEv.id === "string" && respEv.request === reqEv.id && reqEv.messages === 1);
+    const reqBody = JSON.parse(fs.readFileSync(path.join(path.dirname(dbgFile2), reqEv.body), "utf8"));
+    const respBody = JSON.parse(fs.readFileSync(path.join(path.dirname(dbgFile2), respEv.body), "utf8"));
+    ok("debug: the linked files hold the RAW request (messages) and response (model output)", JSON.stringify(reqBody).includes("ping the model") && respBody.choices[0].message.content === "hello back");
+    // the API key must not appear in the index OR any linked body file.
+    const allText = fs.readFileSync(dbgFile2, "utf8") + fs.readdirSync(bodiesDir()).map((f) => fs.readFileSync(path.join(bodiesDir(), f), "utf8")).join("");
+    ok("debug: the API key NEVER appears in the index or any linked body", !allText.includes("SUPERSECRETKEY"));
   } finally { globalThis.fetch = origFetch; }
 
   fs.rmSync(dbgDir, { recursive: true, force: true });
